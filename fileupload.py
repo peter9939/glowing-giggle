@@ -126,16 +126,7 @@ def assign_dc(main_category):
     else:
         return "Unknown"
 
-# ---------------- AR/AP Detection ---------------- #
-def detect_ar_ap(row):
-    main_cat = str(row['Main Category']).lower()
-    dc = str(row['Debit/Credit'])
-    if main_cat == 'revenue' and dc == 'Credit':
-        return 'Accounts Receivable'
-    elif main_cat in ['expense', 'liability'] and dc == 'Debit':
-        return 'Accounts Payable'
-    else:
-        return 'None'
+
 
 # ---------------- File Upload Module ---------------- #
 def file_upload_module():
@@ -225,7 +216,7 @@ def file_upload_module():
     raw_df['Auto-Matched']  = results.apply(lambda r: r[2]).reset_index(drop=True)
     raw_df['Confidence']    = results.apply(lambda r: r[3]).reset_index(drop=True)
     raw_df['Debit/Credit']  = raw_df['Main Category'].apply(assign_dc)
-    raw_df['AR_AP']         = raw_df.apply(detect_ar_ap, axis=1)
+  
 
     st.session_state['processed_df'] = raw_df.copy()
 
@@ -238,9 +229,7 @@ def file_upload_module():
     selected_main = st.selectbox("Filter by Main Category", main_categories)
     sub_categories = ["All"] + sorted(raw_df['Subcategory'].dropna().unique().tolist())
     selected_sub = st.selectbox("Filter by Subcategory", sub_categories)
-    ar_ap_options = ["All", "Accounts Receivable", "Accounts Payable", "None"]
-    selected_ar_ap = st.selectbox("Filter by AR/AP", ar_ap_options)
-
+  
     filtered_df = raw_df.copy()
     if show_uncategorized:
         filtered_df = filtered_df[filtered_df['Auto-Matched'] == False]
@@ -248,16 +237,11 @@ def file_upload_module():
         filtered_df = filtered_df[filtered_df['Main Category'] == selected_main]
     if selected_sub != "All":
         filtered_df = filtered_df[filtered_df['Subcategory'] == selected_sub]
-    if selected_ar_ap != "All":
-        filtered_df = filtered_df[filtered_df['AR_AP'] == selected_ar_ap]
-
+    
     st.subheader("🧾 Categorized Transactions")
     edited_df = st.data_editor(filtered_df, num_rows="dynamic")
 
-    total_ar = raw_df[raw_df['AR_AP'] == 'Accounts Receivable']['Amount'].sum()
-    total_ap = raw_df[raw_df['AR_AP'] == 'Accounts Payable']['Amount'].sum()
-    st.metric("💰 Total Accounts Receivable", f"${total_ar:,.2f}")
-    st.metric("📉 Total Accounts Payable", f"${total_ap:,.2f}")
+    
 
     # Save edited categories
     if st.button("💾 Save Edited Categories"):
