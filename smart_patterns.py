@@ -1,6 +1,5 @@
 # smart_patterns.py
-# Ultra-enhanced dynamic categorization with auto-learning
-# Handles revenue, expenses, payroll, utilities, e-commerce, SaaS, Web3, schools, marketing, insurance, and more
+# Ultra-smart dynamic categorization with full parsing and auto-learning
 
 import re
 import pandas as pd
@@ -37,6 +36,14 @@ def save_new_category(desc, main_cat, sub_cat):
         user_categories_df = pd.concat([user_categories_df, new_row], ignore_index=True)
         user_categories_df.to_csv(USER_CAT_FILE, index=False)
 
+# ---------------- Extract amount and currency ----------------
+def extract_amount_currency(desc):
+    amount_match = re.search(r"(\d{1,3}(?:[,\d]{0,3})*(?:\.\d+)?)", desc)
+    currency_match = re.search(r"\b(usd|pkr|eur|gbp|inr|₹|\$|€|£)\b", desc)
+    amount = amount_match.group(1).replace(',', '') if amount_match else None
+    currency = currency_match.group(1).upper() if currency_match else ""
+    return amount, currency
+
 # ---------------- Smart dynamic categorization ----------------
 def smart_dynamic_categorization(description):
     desc = str(description).lower().strip()
@@ -52,6 +59,31 @@ def smart_dynamic_categorization(description):
                 main_cat, sub_cat = user_dict[match_str]
                 return main_cat, sub_cat, True, score
 
+    # ---------------- Extract amounts and currency ----------------
+    amount, currency = extract_amount_currency(desc)
+    amount_str = f" ({amount}{currency})" if amount else ""
+
+    # ---------------- Generic Credit / Debit Detection ----------------
+    credit_regex = [
+        r"\bcredit from\b", r"\bcredited\b", r"\bdeposit from\b", r"\bpayment from\b",
+        r"\btransfer from\b", r"\breceived from\b"
+    ]
+    debit_regex = [
+        r"\bdebit to\b", r"\bpaid to\b", r"\bwithdrawn to\b", r"\btransfer to\b", r"\bsent to\b"
+    ]
+
+    if any(re.search(pat, desc) for pat in credit_regex):
+        match = re.search(r"(?:credit from|credited by|deposit from|payment from|transfer from|received from)\s+([\w\s]+)", desc)
+        payer = match.group(1).title() if match else "Client"
+        sub_cat = f"Credit from {payer}{amount_str}"
+        return "Revenue", sub_cat, True, 95
+
+    if any(re.search(pat, desc) for pat in debit_regex):
+        match = re.search(r"(?:debit to|paid to|withdrawn to|transfer to|sent to)\s+([\w\s]+)", desc)
+        payee = match.group(1).title() if match else "Payee"
+        sub_cat = f"Debit to {payee}{amount_str}"
+        return "Expense", sub_cat, True, 95
+
     # ---------------- Revenue Patterns ----------------
     revenue_patterns = [
         r"ach (deposit|credit)", r"paypal (deposit|payment|transfer)", r"stripe payout",
@@ -61,18 +93,19 @@ def smart_dynamic_categorization(description):
         r"subscription income", r"commission income", r"interest income"
     ]
     if any(re.search(pat, desc) for pat in revenue_patterns):
+        sub_cat = "Client Payment"
         if any(k in desc for k in ["consulting", "software dev", "freelance", "upwork", "fiverr"]):
-            return "Revenue", "Consulting / Freelance", True, 95
+            sub_cat = "Consulting / Freelance"
         elif any(k in desc for k in ["real estate", "property management"]):
-            return "Revenue", "Real Estate Income", True, 95
+            sub_cat = "Real Estate Income"
         elif any(k in desc for k in ["tuition", "school", "student"]):
-            return "Revenue", "Education / School", True, 95
+            sub_cat = "Education / School"
         elif any(k in desc for k in ["subscription", "membership", "saas"]):
-            return "Revenue", "Subscription / Membership", True, 95
+            sub_cat = "Subscription / Membership"
         elif any(k in desc for k in ["commission", "brokerage", "agent"]):
-            return "Revenue", "Commission Income", True, 95
-        else:
-            return "Revenue", "Client Payment", True, 90
+            sub_cat = "Commission Income"
+        sub_cat += amount_str
+        return "Revenue", sub_cat, True, 95
 
     # ---------------- Expense Patterns ----------------
     expense_keywords = {
@@ -103,21 +136,22 @@ def smart_dynamic_categorization(description):
 
     for cat, keywords in expense_keywords.items():
         if any(kw in desc for kw in keywords):
-            return "Expense", cat, True, 95
-
-    # ---------------- Rounded / Numeric Payments ----------------
-    if re.search(r"[\s,](\d{2,})(\.00)?$", desc):
-        return "Expense", "Rounded Payment / Bill", True, 80
+            sub_cat = f"{cat}{amount_str}"
+            return "Expense", sub_cat, True, 95
 
     # ---------------- Refunds / Chargebacks ----------------
     if any(kw in desc for kw in ["refund", "chargeback", "reversal", "rebate"]):
-        return "Expense", "Refund / Reversal", True, 95
+        return "Expense", f"Refund / Reversal{amount_str}", True, 95
 
-    # ---------------- Uncategorized Fallback ----------------
+    # ---------------- Rounded / Uncategorized Payments ----------------
+    if amount:
+        return "Expense", f"Rounded Payment / Bill{amount_str}", True, 80
+
+    # ---------------- Fallback ----------------
     if any(k in desc for k in ["pay", "deposit", "transfer", "receive", "payment", "credited"]):
-        main_cat, sub_cat = "Revenue", "Client Payment"
+        main_cat, sub_cat = "Revenue", f"Client Payment{amount_str}"
     else:
-        main_cat, sub_cat = "Expense", "Miscellaneous"
+        main_cat, sub_cat = "Expense", f"Miscellaneous{amount_str}"
 
     save_new_category(desc, main_cat, sub_cat)
     return main_cat, sub_cat, False, 50

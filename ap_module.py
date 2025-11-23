@@ -1,98 +1,244 @@
+# ap_module.py
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from datetime import datetime
+from datetime import timedelta
+from rapidfuzz import process, fuzz
 from fileupload import get_processed_df
 
+FUZZY_NAME_THRESHOLD = 75
+DATE_TOLERANCE_DAYS = 7
+AMOUNT_TOLERANCE = 0.01
+
+def normalize_text(s):
+    return "" if pd.isna(s) else str(s).strip().lower()
+
+def load_internal_file_flexible(uploaded_file):
+    # Same loader as AR; can be refactored/shared in real project
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)
+    except Exception as e:
+        st.error(f"Failed to load internal file: {e}")
+        return pd.DataFrame()
+
+    cols_map = {c: c.strip().lower().replace(" ", "_") for c in df.columns}
+    df.rename(columns={orig: cols_map[orig] for orig in df.columns}, inplace=True)
+
+    def find_col(variants):
+        for v in variants:
+            if v in df.columns:
+                return v
+        return None
+
+    type_col = find_col(['type','record_type','ar_ap','kind'])
+    id_col = find_col(['invoice_id','invoice_number','invoice','id','document_id','ref'])
+    name_col = find_col(['vendor','name','payee','party','supplier'])
+    amount_col = find_col(['amount','amt','value','total'])
+    date_col = find_col(['date','bill_date','invoice_date','issue_date'])
+    due_col = find_col(['due_date','duedate'])
+
+    if type_col is None: df['type'] = ''; type_col = 'type'
+    if id_col is None: df['invoice_id'] = ''; id_col = 'invoice_id'
+    if name_col is None: df['name'] = ''; name_col = 'name'
+    if amount_col is None: df['amount'] = 0.0; amount_col = 'amount'
+    if date_col is None: df['date'] = pd.NaT; date_col = 'date'
+    if due_col is None: df['due_date'] = pd.NaT; due_col = 'due_date'
+
+    df[type_col] = df[type_col].astype(str).fillna('').str.upper()
+    df[id_col] = df[id_col].astype(str).fillna('')
+    df[name_col] = df[name_col].astype(str).fillna('')
+    df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce').fillna(0.0)
+    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+    df[due_col] = pd.to_datetime(df[due_col], errors='coerce')
+
+    def infer_type(row):
+        t = str(row[type_col]).strip().lower()
+        if t in ('ap','bill','purchase','payable','vendor','expense'):
+            return 'AP'
+        if t in ('ar','invoice','sale','receivable','customer'):
+            return 'AR'
+        # fallback: negative amounts likely AP
+        return 'AP' if row[amount_col] < 0 else 'AR'
+
+    df['record_type'] = df.apply(infer_type, axis=1)
+
+    std = pd.DataFrame({
+        'type': df['record_type'],
+        'invoice_id': df[id_col].astype(str),
+        'name': df[name_col].astype(str),
+        # for AP keep positive absolute amounts for matching clarity
+        'amount': df[amount_col].apply(lambda x: abs(float(x))),
+        'date': df[date_col],
+        'due_date': df[due_col]
+    })
+    return std
+
+def build_bank_index(bank_df):
+    b = bank_df.copy()
+    if 'date' not in b.columns and 'Date' in b.columns:
+        b['date'] = pd.to_datetime(b['Date'], errors='coerce')
+    else:
+        b['date'] = pd.to_datetime(b.get('date', pd.NaT), errors='coerce')
+    if 'description' not in b.columns and 'Description' in b.columns:
+        b['description'] = b['Description'].astype(str)
+    else:
+        b['description'] = b.get('description', '').astype(str)
+    if 'amount' not in b.columns and 'Amount' in b.columns:
+        b['amount'] = pd.to_numeric(b['Amount'], errors='coerce').fillna(0.0)
+    else:
+        b['amount'] = pd.to_numeric(b.get('amount', 0.0), errors='coerce').fillna(0.0)
+
+    b['desc_norm'] = b['description'].str.strip().str.lower()
+    b = b.reset_index().rename(columns={'index':'bank_index'})
+    b['matched'] = False
+    b['matched_refs'] = [[] for _ in range(len(b))]
+    return b
+
+def match_ap_to_bank(ap_row, bank_idx):
+    bill_amt = round(float(ap_row['amount']), 2)
+    if bill_amt <= 0:
+        return [], 0.0
+
+    candidates = bank_idx[~bank_idx['matched']].copy()
+    if pd.notna(ap_row['date']):
+        min_d = ap_row['date'] - timedelta(days=DATE_TOLERANCE_DAYS)
+        max_d = ap_row['date'] + timedelta(days=DATE_TOLERANCE_DAYS)
+        candidates = candidates[(candidates['date'] >= min_d) & (candidates['date'] <= max_d)]
+
+    invoice_id = normalize_text(ap_row['invoice_id'])
+    if invoice_id:
+        exact = candidates[candidates['desc_norm'].str.contains(invoice_id, na=False)]
+        if not exact.empty:
+            for _, r in exact.iterrows():
+                if abs(abs(r['amount']) - bill_amt) <= AMOUNT_TOLERANCE:
+                    return [int(r['bank_index'])], r['amount']
+            total = 0.0; idxs = []
+            for _, r in exact.iterrows():
+                if r['amount'] < 0:
+                    idxs.append(int(r['bank_index'])); total += abs(r['amount'])
+                    if abs(total - bill_amt) <= AMOUNT_TOLERANCE:
+                        return idxs, -total
+
+    name = normalize_text(ap_row['name'])
+    if name and not candidates.empty:
+        choices = candidates['desc_norm'].tolist()
+        res = process.extract(name, choices, scorer=fuzz.token_sort_ratio, limit=20)
+        for choice, score, idx in res:
+            if score < FUZZY_NAME_THRESHOLD:
+                continue
+            candidate = candidates.iloc[idx]
+            if abs(abs(candidate['amount']) - bill_amt) <= AMOUNT_TOLERANCE and candidate['amount'] < 0:
+                return [int(candidate['bank_index'])], candidate['amount']
+        # try summing negatives with good fuzzy score
+        idxs=[]; total=0.0
+        for choice, score, idx in res:
+            if score < FUZZY_NAME_THRESHOLD: continue
+            candidate = candidates.iloc[idx]
+            if candidate['amount'] < 0:
+                idxs.append(int(candidate['bank_index'])); total += abs(candidate['amount'])
+                if abs(total - bill_amt) <= AMOUNT_TOLERANCE:
+                    return idxs, -total
+
+    amt_candidates = bank_idx[(~bank_idx['matched']) & (abs(abs(bank_idx['amount']) - bill_amt) <= AMOUNT_TOLERANCE)]
+    if pd.notna(ap_row['date']):
+        min_d = ap_row['date'] - timedelta(days=DATE_TOLERANCE_DAYS)
+        max_d = ap_row['date'] + timedelta(days=DATE_TOLERANCE_DAYS)
+        amt_candidates = amt_candidates[(amt_candidates['date'] >= min_d) & (amt_candidates['date'] <= max_d)]
+    if not amt_candidates.empty:
+        r = amt_candidates.iloc[0]
+        return [int(r['bank_index'])], r['amount']
+
+    return [], 0.0
+
 def ap_module():
-    st.title("📦 Accounts Payable (AP) - Enhanced")
-    
-    # ---------------- Upload Vendor/Bill Files ---------------- #
-    uploaded_files = st.file_uploader("Upload Vendor/Bill CSV/XLSX files", type=['csv','xlsx'], accept_multiple_files=True)
-    
-    ap_df = pd.DataFrame()
-    for f in uploaded_files:
-        try:
-            df = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
-            ap_df = pd.concat([ap_df, df], ignore_index=True)
-        except Exception as e:
-            st.error(f"Failed to read {f.name}: {e}")
-    
-    if ap_df.empty:
-        st.info("Upload bill/vendor files to proceed.")
+    st.title("📦 Accounts Payable (AP) - Production Ready")
+    st.info("Upload internal master file (may contain both AR/AP). Bank transactions must be uploaded first in 'Upload Transactions' module.")
+
+    uploaded_file = st.file_uploader("Internal Master File (CSV/XLSX)", type=['csv','xlsx'], key='ap_internal')
+    if uploaded_file is None:
+        st.info("Please upload the internal master file containing bills (AP).")
         return
 
-    # ---------------- Normalize ---------------- #
-    ap_df.columns = [c.strip().title() for c in ap_df.columns]
-    if 'Amount' not in ap_df.columns:
-        ap_df['Amount'] = 0.0
-    if 'Paid' not in ap_df.columns:
-        ap_df['Paid'] = 0.0
-    if 'Bill Date' not in ap_df.columns:
-        ap_df['Bill Date'] = pd.Timestamp.today()
-    else:
-        ap_df['Bill Date'] = pd.to_datetime(ap_df['Bill Date'], errors='coerce')
+    internal = load_internal_file_flexible(uploaded_file)
+    if internal.empty:
+        st.error("Could not process internal file.")
+        return
 
-    # ---------------- Outstanding / Paid ---------------- #
+    ap_df = internal[internal['type'] == 'AP'].copy()
+    if ap_df.empty:
+        st.warning("No AP rows found.")
+        return
+
     bank_df = get_processed_df()
-    if not bank_df.empty:
-        def match_payment(row):
-            matches = bank_df[
-                (bank_df['Amount'] >= -row['Amount']) &
-                (bank_df['Description'].str.contains(str(row.get('Description','')), case=False))
-            ]
-            total_paid = -matches['Amount'].sum() if not matches.empty else 0
-            return total_paid
-        ap_df['Paid'] = ap_df.apply(match_payment, axis=1)
-    else:
-        ap_df['Paid'] = 0.0
+    if bank_df is None or bank_df.empty:
+        st.warning("No bank transactions in session. Upload bank data under Upload Transactions.")
+        return
 
-    ap_df['Outstanding'] = ap_df['Amount'] - ap_df['Paid']
-    ap_df['Payment Status'] = ap_df['Outstanding'].apply(lambda x: "Paid" if x <= 0 else "Partial" if x < ap_df['Amount'].max() else "Unpaid")
+    bank_idx = build_bank_index(bank_df)
 
-    # ---------------- Aging Buckets ---------------- #
-    today = pd.Timestamp.today()
-    ap_df['Days Outstanding'] = (today - ap_df['Bill Date']).dt.days
-    def aging_bucket(days):
-        if days <= 30:
-            return "0-30"
-        elif days <= 60:
-            return "31-60"
-        elif days <= 90:
-            return "61-90"
+    ap_df['paid_amount'] = 0.0
+    ap_df['matched_bank_refs'] = [[] for _ in range(len(ap_df))]
+    ap_df['payment_status'] = 'Unpaid'
+
+    for i, row in ap_df.iterrows():
+        matched_idxs, total = match_ap_to_bank(row, bank_idx)
+        if matched_idxs:
+            ap_df.at[i, 'matched_bank_refs'] = matched_idxs
+            for bi in matched_idxs:
+                bank_idx.loc[bank_idx['bank_index'] == bi, 'matched'] = True
+                bank_idx.loc[bank_idx['bank_index'] == bi, 'matched_refs'] = bank_idx.loc[bank_idx['bank_index'] == bi, 'matched_refs'].apply(lambda lst: lst + [row['invoice_id']])
+            ap_df.at[i, 'paid_amount'] = round(abs(total), 2)
+            if abs(abs(total) - row['amount']) <= AMOUNT_TOLERANCE:
+                ap_df.at[i, 'payment_status'] = 'Paid'
+            else:
+                ap_df.at[i, 'payment_status'] = 'Partial'
         else:
-            return "90+"
-    ap_df['Aging Bucket'] = ap_df['Days Outstanding'].apply(aging_bucket)
+            ap_df.at[i, 'payment_status'] = 'Unpaid'
 
-    # ---------------- Dashboard Metrics ---------------- #
-    st.subheader("📊 AP Dashboard")
-    st.metric("Total AP", f"{ap_df['Amount'].sum():,.2f}")
-    st.metric("Paid", f"{ap_df['Paid'].sum():,.2f}")
-    st.metric("Outstanding", f"{ap_df['Outstanding'].sum():,.2f}")
-    st.metric("Overdue (>30 days)", f"{ap_df[ap_df['Days Outstanding']>30]['Outstanding'].sum():,.2f}")
+    ap_df['outstanding'] = (ap_df['amount'] - ap_df['paid_amount']).round(2)
+    today = pd.Timestamp.today()
+    ap_df['days_outstanding'] = (today - ap_df['date']).dt.days.fillna(0).astype(int)
+    def aging(days):
+        if days <= 30: return '0-30'
+        if days <= 60: return '31-60'
+        if days <= 90: return '61-90'
+        return '90+'
+    ap_df['aging_bucket'] = ap_df['days_outstanding'].apply(aging)
 
-    # ---------------- Filters ---------------- #
-    st.subheader("🔍 Filter AP Transactions")
-    vendor_filter = st.text_input("Vendor/Description Filter")
+    st.subheader("AP Summary")
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("Total AP", f"{ap_df['amount'].sum():,.2f}")
+    c2.metric("Paid", f"{ap_df['paid_amount'].sum():,.2f}")
+    c3.metric("Outstanding", f"{ap_df['outstanding'].sum():,.2f}")
+    c4.metric("Overdue (>30d)", f"{ap_df[ap_df['days_outstanding']>30]['outstanding'].sum():,.2f}")
+
+    vendor_filter = st.text_input("Vendor filter")
     status_filter = st.selectbox("Payment Status", ['All','Paid','Partial','Unpaid'])
     bucket_filter = st.selectbox("Aging Bucket", ['All','0-30','31-60','61-90','90+'])
 
-    filtered_df = ap_df.copy()
+    filtered = ap_df.copy()
     if vendor_filter:
-        filtered_df = filtered_df[filtered_df['Description'].str.contains(vendor_filter, case=False)]
+        filtered = filtered[filtered['name'].str.contains(vendor_filter, case=False, na=False)]
     if status_filter != 'All':
-        filtered_df = filtered_df[filtered_df['Payment Status'] == status_filter]
+        filtered = filtered[filtered['payment_status'] == status_filter]
     if bucket_filter != 'All':
-        filtered_df = filtered_df[filtered_df['Aging Bucket'] == bucket_filter]
+        filtered = filtered[filtered['aging_bucket'] == bucket_filter]
 
-    st.dataframe(filtered_df)
+    st.dataframe(filtered[['invoice_id','name','amount','paid_amount','outstanding','payment_status','days_outstanding','aging_bucket','matched_bank_refs']])
 
-    # ---------------- Downloads ---------------- #
-    csv_data = filtered_df.to_csv(index=False).encode('utf-8')
-    st.download_button("⬇️ Download CSV", data=csv_data, file_name="ap_report.csv")
-    
-    excel_output = BytesIO()
-    with pd.ExcelWriter(excel_output, engine='xlsxwriter') as writer:
-        filtered_df.to_excel(writer, index=False, sheet_name='AP')
-    excel_output.seek(0)
-    st.download_button("⬇️ Download Excel", data=excel_output, file_name="ap_report.xlsx")
+    st.download_button("⬇️ Download AP CSV", data=filtered.to_csv(index=False).encode('utf-8'), file_name='ap_report.csv')
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+        filtered.to_excel(writer, index=False, sheet_name='AP')
+        bank_unmatched = bank_idx[~bank_idx['matched']].copy()
+        bank_unmatched.to_excel(writer, index=False, sheet_name='Unmatched_Bank')
+    buf.seek(0)
+    st.download_button("⬇️ Download AP Excel", data=buf, file_name='ap_report.xlsx')
+
+    st.subheader("Unmatched Bank Transactions (possible payments)")
+    st.dataframe(bank_idx[~bank_idx['matched']][['bank_index','date','description','amount']])
+
+    st.session_state['ap_results'] = ap_df

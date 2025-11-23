@@ -1,112 +1,227 @@
+# reconciliation_module.py
 import streamlit as st
 import pandas as pd
-from rapidfuzz import fuzz
 from io import BytesIO
-from datetime import datetime
-from fileupload import get_processed_df
+from rapidfuzz import fuzz
+from datetime import timedelta
+from rapidfuzz import process, fuzz
 
-# ---------------- Reconciliation Function ---------------- #
-def reconcile(bank_df, ledger_df, desc_threshold=80, date_tolerance=2):
-    bank_df = bank_df.copy()
-    ledger_df = ledger_df.copy()
-    
-    # Ensure required columns
-    for col in ['Date', 'Description', 'Amount']:
-        if col not in ledger_df.columns:
-            ledger_df[col] = pd.NaT if col=='Date' else 0 if col=='Amount' else 'Unknown'
-        if col not in bank_df.columns:
-            bank_df[col] = pd.NaT if col=='Date' else 0 if col=='Amount' else 'Unknown'
 
-    # Convert to datetime safely
-    ledger_df['Date'] = pd.to_datetime(ledger_df['Date'], errors='coerce')
-    bank_df['Date'] = pd.to_datetime(bank_df['Date'], errors='coerce')
+# This reconciliation module is robust to unknown ledger structure.
+# It will try to infer AR/AP rows and run matching; also provides filters.
 
-    ledger_df = ledger_df.dropna(subset=['Date'])
-    bank_df = bank_df.dropna(subset=['Date'])
+def load_file_flexible(uploaded_file):
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)
+    except Exception as e:
+        st.error(f"Failed to load file: {e}")
+        return pd.DataFrame()
+    cols_map = {c: c.strip().lower().replace(' ', '_') for c in df.columns}
+    df.rename(columns={orig: cols_map[orig] for orig in df.columns}, inplace=True)
+    # Try to standardize main columns
+    def find_col(list_opts):
+        for o in list_opts:
+            if o in df.columns:
+                return o
+        return None
+    type_col = find_col(['type','record_type','ar_ap','kind'])
+    id_col = find_col(['invoice_id','invoice_number','invoice','id','document_id','ref'])
+    name_col = find_col(['name','customer','vendor','payee','party'])
+    amount_col = find_col(['amount','amt','value','total'])
+    date_col = find_col(['date','transaction_date','invoice_date','bill_date'])
+    # set defaults
+    if type_col is None:
+        df['type'] = ''
+        type_col='type'
+    if id_col is None:
+        df['invoice_id']=''
+        id_col='invoice_id'
+    if name_col is None:
+        df['name']=''
+        name_col='name'
+    if amount_col is None:
+        df['amount']=0.0
+        amount_col='amount'
+    if date_col is None:
+        df['date']=pd.NaT
+        date_col='date'
+    # normalize
+    df[type_col] = df[type_col].astype(str).fillna('').str.upper()
+    df[id_col] = df[id_col].astype(str).fillna('')
+    df[name_col] = df[name_col].astype(str).fillna('')
+    df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce').fillna(0.0)
+    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+    # infer record type similar to AP/AR modules
+    def infer_type(row):
+        t = str(row[type_col]).strip().lower()
+        if t in ('ap','bill','payable','vendor','purchase','expense'): return 'AP'
+        if t in ('ar','invoice','receivable','sale','customer'): return 'AR'
+        return 'AR' if row[amount_col] >= 0 else 'AP'
+    df['record_type'] = df.apply(infer_type, axis=1)
+    # standardized df
+    std = pd.DataFrame({
+        'type': df['record_type'],
+        'invoice_id': df[id_col].astype(str),
+        'name': df[name_col].astype(str),
+        'amount': df[amount_col].astype(float),
+        'date': df[date_col]
+    })
+    return std
 
-    ledger_df['Reconciled'] = False
-    ledger_df['Matched_Bank_Amount'] = 0
-    bank_df['Matched_Ledger_Index'] = -1
+def build_bank_index(bank_df):
+    b = bank_df.copy()
+    if 'date' not in b.columns and 'Date' in b.columns:
+        b['date'] = pd.to_datetime(b['Date'], errors='coerce')
+    else:
+        b['date'] = pd.to_datetime(b.get('date', pd.NaT), errors='coerce')
+    if 'description' not in b.columns and 'Description' in b.columns:
+        b['description'] = b['Description'].astype(str)
+    else:
+        b['description'] = b.get('description', '').astype(str)
+    if 'amount' not in b.columns and 'Amount' in b.columns:
+        b['amount'] = pd.to_numeric(b['Amount'], errors='coerce').fillna(0.0)
+    else:
+        b['amount'] = pd.to_numeric(b.get('amount', 0.0), errors='coerce').fillna(0.0)
+    b['desc_norm'] = b['description'].str.strip().str.lower()
+    b = b.reset_index().rename(columns={'index':'bank_index'})
+    b['matched'] = False
+    b['matched_refs'] = [[] for _ in range(len(b))]
+    return b
 
-    # ---------------- Match bank transactions to ledger ---------------- #
-    for b_idx, b_row in bank_df.iterrows():
-        best_match_idx = None
-        best_score = 0
-        for l_idx, l_row in ledger_df.iterrows():
-            # Amount tolerance (partial payments)
-            if abs(b_row['Amount']) > abs(l_row['Amount'] - l_row['Matched_Bank_Amount']) + 0.01:
+def reconcile_combined(ledger_df, bank_df, desc_threshold=80, date_tolerance=7, fuzzy_threshold=75, amount_tol=0.01):
+    ledger = ledger_df.copy()
+    bank = bank_df.copy()
+    ledger['matched_amount'] = 0.0
+    ledger['status'] = 'Unmatched'
+    bank_idx = build_bank_index(bank)
+    # For each ledger row (prefer AR/amount>0 or AP with abs)
+    for li, lrow in ledger.iterrows():
+        inv_amt = abs(float(lrow['amount']))
+        # prepare candidates
+        # candidate selection depends on type: AR expects bank incoming (+), AP expects bank outgoing (-)
+        candidates = bank_idx[~bank_idx['matched']].copy()
+        # date filter
+        if pd.notna(lrow['date']):
+            min_d = lrow['date'] - timedelta(days=date_tolerance)
+            max_d = lrow['date'] + timedelta(days=date_tolerance)
+            candidates = candidates[(candidates['date'] >= min_d) & (candidates['date'] <= max_d)]
+        # invoice id check
+        inv_id = str(lrow.get('invoice_id','')).strip().lower()
+        exact_matches = []
+        if inv_id:
+            exact_matches = candidates[candidates['desc_norm'].str.contains(inv_id, na=False)]
+            if not exact_matches.empty:
+                # choose matching sign & amount
+                for _, cand in exact_matches.iterrows():
+                    # check sign vs type
+                    if lrow['type']=='AR' and cand['amount']>0 and abs(cand['amount']-inv_amt) <= amount_tol:
+                        ledger.at[li,'matched_amount'] = cand['amount']
+                        ledger.at[li,'status'] = 'Matched'
+                        bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched']=True
+                        bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched_refs'] = bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched_refs'].apply(lambda lst: lst+[lrow.get('invoice_id')])
+                        break
+                    if lrow['type']=='AP' and cand['amount']<0 and abs(abs(cand['amount'])-inv_amt) <= amount_tol:
+                        ledger.at[li,'matched_amount'] = abs(cand['amount'])
+                        ledger.at[li,'status'] = 'Matched'
+                        bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched']=True
+                        bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched_refs'] = bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched_refs'].apply(lambda lst: lst+[lrow.get('invoice_id')])
+                        break
+            if ledger.at[li,'status']=='Matched':
                 continue
-            # Description fuzzy match
-            score = fuzz.token_sort_ratio(str(b_row['Description']), str(l_row['Description']))
-            # Date difference
-            date_diff = abs((b_row['Date'] - l_row['Date']).days)
-            if score >= desc_threshold and date_diff <= date_tolerance and score > best_score:
-                best_score = score
-                best_match_idx = l_idx
-        if best_match_idx is not None:
-            ledger_df.at[best_match_idx, 'Matched_Bank_Amount'] += b_row['Amount']
-            if abs(ledger_df.at[best_match_idx, 'Matched_Bank_Amount'] - ledger_df.at[best_match_idx, 'Amount']) < 0.01:
-                ledger_df.at[best_match_idx, 'Reconciled'] = True
-            bank_df.at[b_idx, 'Matched_Ledger_Index'] = best_match_idx
+        # fuzzy name + amount attempt
+        name = str(lrow.get('name','')).strip().lower()
+        if name and not candidates.empty:
+            choices = candidates['desc_norm'].tolist()
+            res = process.extract(name, choices, scorer=fuzz.token_sort_ratio, limit=20)
+            # try exact amount match with good fuzzy score
+            for choice, score, idx in res:
+                if score < fuzzy_threshold:
+                    continue
+                cand = candidates.iloc[idx]
+                if lrow['type']=='AR' and cand['amount']>0 and abs(cand['amount']-inv_amt) <= amount_tol:
+                    ledger.at[li,'matched_amount']=cand['amount']; ledger.at[li,'status']='Matched'
+                    bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched']=True
+                    bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched_refs'] = bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched_refs'].apply(lambda lst: lst+[lrow.get('invoice_id')])
+                    break
+                if lrow['type']=='AP' and cand['amount']<0 and abs(abs(cand['amount'])-inv_amt) <= amount_tol:
+                    ledger.at[li,'matched_amount']=abs(cand['amount']); ledger.at[li,'status']='Matched'
+                    bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched']=True
+                    bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched_refs'] = bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched_refs'].apply(lambda lst: lst+[lrow.get('invoice_id')])
+                    break
+        if ledger.at[li,'status']=='Matched':
+            continue
+        # fallback amount-only (date tolerated)
+        amt_candidates = candidates[abs(abs(candidates['amount'])-inv_amt) <= amount_tol]
+        if not amt_candidates.empty:
+            cand = amt_candidates.iloc[0]
+            if lrow['type']=='AR' and cand['amount']>0:
+                ledger.at[li,'matched_amount'] = cand['amount']; ledger.at[li,'status']='Matched'
+                bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched']=True
+                bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched_refs'] = bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched_refs'].apply(lambda lst: lst+[lrow.get('invoice_id')])
+            if lrow['type']=='AP' and cand['amount']<0:
+                ledger.at[li,'matched_amount'] = abs(cand['amount']); ledger.at[li,'status']='Matched'
+                bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched']=True
+                bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched_refs'] = bank_idx.loc[bank_idx['bank_index']==cand['bank_index'],'matched_refs'].apply(lambda lst: lst+[lrow.get('invoice_id')])
+    # prepare outputs
+    matched = ledger[ledger['status']=='Matched'].copy()
+    unmatched_ledger = ledger[ledger['status']!='Matched'].copy()
+    unmatched_bank = bank_idx[~bank_idx['matched']].copy()
 
-    # Split results
-    matched = ledger_df[ledger_df['Reconciled'] == True]
-    partially_matched = ledger_df[(ledger_df['Reconciled'] == False) & (ledger_df['Matched_Bank_Amount'] > 0)]
-    unmatched_ledger = ledger_df[(ledger_df['Reconciled'] == False) & (ledger_df['Matched_Bank_Amount'] == 0)]
-    unmatched_bank = bank_df[bank_df['Matched_Ledger_Index'] == -1]
+    return matched, unmatched_ledger, unmatched_bank
 
-    return matched, partially_matched, unmatched_ledger, unmatched_bank
+def to_excel(dct):
+    out = BytesIO()
+    with pd.ExcelWriter(out, engine='xlsxwriter') as writer:
+        for k,v in dct.items():
+            v.to_excel(writer, index=False, sheet_name=k[:31])
+    return out.getvalue()
 
-# ---------------- Export to Excel ---------------- #
-def to_excel(df_dict):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        for sheet_name, df in df_dict.items():
-            df.to_excel(writer, index=False, sheet_name=sheet_name)
-    return output.getvalue()
-
-# ---------------- Streamlit App ---------------- #
 def reconciliation_module():
-    st.title("🔄 Bank Reconciliation Enhanced")
+    st.title("🔄 Combined Reconciliation (AR/AP + Bank)")
 
-    st.info("Upload both Ledger (AR/AP) and Bank Statement files (CSV/XLSX).")
+    st.info("Upload one internal master ledger (may contain AR & AP) and a bank statement. The module will auto-split and reconcile; use filters to view AR or AP.")
 
-    ledger_file = st.file_uploader("Upload Ledger (AR/AP)", type=['csv','xlsx'], key="ledger")
-    bank_file = st.file_uploader("Upload Bank Statement", type=['csv','xlsx'], key="bank")
+    ledger_file = st.file_uploader("Internal Master Ledger (CSV/XLSX)", type=['csv','xlsx'])
+    bank_file = st.file_uploader("Bank Statement (CSV/XLSX)", type=['csv','xlsx'])
 
-    desc_threshold = st.sidebar.slider("Description Match Threshold (%)", 50, 100, 80)
-    date_tolerance = st.sidebar.number_input("Date Tolerance (days)", min_value=0, max_value=10, value=2, step=1)
+    desc_threshold = st.sidebar.slider("Description match threshold", 50, 100, 80)
+    date_tol = st.sidebar.number_input("Date tolerance (days)", 0, 30, 7)
+    fuzzy_th = st.sidebar.slider("Fuzzy name threshold", 50, 100, 75)
 
-    if ledger_file and bank_file:
-        try:
-            ledger_df = pd.read_csv(ledger_file) if ledger_file.name.endswith('.csv') else pd.read_excel(ledger_file)
-            bank_df = pd.read_csv(bank_file) if bank_file.name.endswith('.csv') else pd.read_excel(bank_file)
-        except Exception as e:
-            st.error(f"Failed to read files: {e}")
-            return
+    if not ledger_file or not bank_file:
+        st.info("Upload both ledger and bank files to run reconciliation.")
+        return
 
-        matched, partially_matched, unmatched_ledger, unmatched_bank = reconcile(bank_df, ledger_df, desc_threshold, date_tolerance)
+    ledger = load_file_flexible(ledger_file)
+    bank = pd.read_csv(bank_file) if bank_file.name.endswith('.csv') else pd.read_excel(bank_file)
 
-        st.subheader("✅ Fully Matched Transactions")
-        st.dataframe(matched)
+    matched, unmatched_ledger, unmatched_bank = reconcile_combined(ledger, bank, desc_threshold, date_tol, fuzzy_th)
 
-        st.subheader("🟡 Partially Matched Transactions")
-        st.dataframe(partially_matched)
+    # Filters
+    st.subheader("Filter Ledger Type")
+    ledger_type = st.selectbox("Show", ['All','AR','AP'])
+    if ledger_type != 'All':
+        matched_show = matched[matched['type']==ledger_type]
+        unmatched_show = unmatched_ledger[unmatched_ledger['type']==ledger_type]
+    else:
+        matched_show = matched
+        unmatched_show = unmatched_ledger
 
-        st.subheader("⚠️ Unmatched Ledger Transactions")
-        st.dataframe(unmatched_ledger)
+    st.subheader("✅ Matched Ledger Items")
+    st.dataframe(matched_show)
 
-        st.subheader("⚠️ Unmatched Bank Transactions")
-        st.dataframe(unmatched_bank)
+    st.subheader("⚠️ Unmatched Ledger Items")
+    st.dataframe(unmatched_show)
 
-        # ---------------- Download Excel ---------------- #
-        df_dict = {
-            'Matched': matched,
-            'Partially_Matched': partially_matched,
-            'Unmatched_Ledger': unmatched_ledger,
-            'Unmatched_Bank': unmatched_bank
-        }
-        st.download_button("⬇️ Download Reconciliation Report", data=to_excel(df_dict), file_name="enhanced_reconciliation.xlsx")
+    st.subheader("⚠️ Unmatched Bank Transactions")
+    st.dataframe(unmatched_bank[['bank_index','date','description','amount']])
+
+    # Download
+    d = {'Matched': matched, 'Unmatched_Ledger': unmatched_ledger, 'Unmatched_Bank': unmatched_bank}
+    st.download_button("⬇️ Download Reconciliation Excel", data=to_excel(d), file_name="combined_reconciliation.xlsx")
 
 if __name__ == "__main__":
     reconciliation_module()

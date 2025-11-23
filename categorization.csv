@@ -127,3 +127,6 @@ Office Supplies Purchase,Expense,Office / Supplies / Equipment
 Travel Expense,Expense,Miscellaneous
 Client Payment,Revenue,Client Payment
 Electricity Bill,Expense,Utilities / Rent
+amazon mktplace pmts amzn,Expense,Miscellaneous
+credit - client a,Expense,Miscellaneous
+debit - supplier x,Expense,Miscellaneous
