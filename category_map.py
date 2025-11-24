@@ -1,3 +1,31 @@
+"""
+CATEGORY CONFIGURATION FILE
+---------------------------
+
+This file contains mappings to automatically categorize financial transactions
+based on description patterns or exact keywords. It has two main structures:
+
+1. CATEGORY_PATTERNS:
+   - List of tuples (regex_pattern, main_category, sub_category)
+   - Used for dynamic categorization based on text patterns.
+
+2. CATEGORY_MAP:
+   - Dictionary mapping exact keywords to (main_category, sub_category)
+   - Used for direct lookup and standardization.
+
+Categories cover:
+- Assets (current, fixed, intangible, investments)
+- Liabilities (current, long-term)
+- Equity
+- Revenue
+- Expenses
+
+Updated & enhanced for wider coverage and better consistency.
+"""
+
+# ---------------------------
+# Transaction Pattern Matching
+# ---------------------------
 CATEGORY_PATTERNS = [
 
     # -------------------
@@ -28,7 +56,7 @@ CATEGORY_PATTERNS = [
     (r'lab test .*', "Revenue", "Laboratory Income"),
     (r'pharmacy sale .*', "Revenue", "Pharmacy Sales"),
     (r'medicine sale .*', "Revenue", "Pharmacy Sales"),
-    (r'subscription income .*', "Revenue", "Subscription Income"),
+    (r'subscriptions income .*', "Revenue", "Subscription Income"),
     (r'membership fee .*', "Revenue", "Subscription Income"),
     (r'renewal fee .*', "Revenue", "Subscription Income"),
     (r'interest income .*', "Revenue", "Finance Income"),
@@ -173,14 +201,137 @@ CATEGORY_PATTERNS = [
     # Miscellaneous
     (r'miscellaneous .*', "Expense", "Miscellaneous"),
     (r'other .*', "Expense", "Miscellaneous"),
+# ---------------------------
+# Fuzzy / Flexible Patterns for Common Typos and Variations
+# ---------------------------
+
+
+
+    # Revenue / Sales (typos, abbreviations)
+    (r'amazon s(ale|ales|saels).*', "Revenue", "E-commerce Sales"),
+    (r'daraz s(ale|ales|saels).*', "Revenue", "E-commerce Sales"),
+    (r'shopify s(ale|ales).*', "Revenue", "E-commerce Sales"),
+    (r'online order(s)? .*', "Revenue", "E-commerce Sales"),
+    (r'e-?commerce s(ale|ales).*', "Revenue", "E-commerce Sales"),
+    (r'store s(ale|ales).*', "Revenue", "Retail Sales"),
+    (r'counter s(ale|sales).*', "Revenue", "Retail Sales"),
+    (r'bulk s(ale|sales).*', "Revenue", "Wholesale Sales"),
+    (r'wholesal(e|es) .*', "Revenue", "Wholesale Sales"),
+    (r'room booking .*', "Revenue", "Room Revenue"),
+    (r'hotel booking .*', "Revenue", "Room Revenue"),
+    (r'event booking .*', "Revenue", "Event Income"),
+    (r'consult(ation|ant)? fee .*', "Revenue", "Medical Income"),
+    (r'doctor fee .*', "Revenue", "Medical Income"),
+    (r'lab test .*', "Revenue", "Laboratory Income"),
+    (r'pharmacy s(ale|sales).*', "Revenue", "Pharmacy Sales"),
+    (r'medicine s(ale|sales).*', "Revenue", "Pharmacy Sales"),
+    (r'subscription .*', "Revenue", "Subscription Income"),
+    (r'membership fee .*', "Revenue", "Subscription Income"),
+    (r'renewal fee .*', "Revenue", "Subscription Income"),
+    (r'interes(t|st) income .*', "Revenue", "Finance Income"),
+    (r'bank interes(t|st) .*', "Revenue", "Finance Income"),
+    (r'rent(al)? income .*', "Revenue", "Rental Income"),
+    (r'rent received .*', "Revenue", "Rental Income"),
+    (r'other income .*', "Revenue", "Other Income"),
+    (r'misc(ellaneous)? income .*', "Revenue", "Other Income"),
+    (r'non-?operating income .*', "Revenue", "Other Income"),
+    (r'commission income .*', "Revenue", "Commission Income"),
+    (r'agent commission .*', "Revenue", "Commission Income"),
+    (r'brokerage .*', "Revenue", "Commission Income"),
+    (r'maintenance income .*', "Revenue", "Maintenance Revenue"),
+    (r'freelance income .*', "Revenue", "Service Income"),
+    (r'consulting income .*', "Revenue", "Service Income"),
+    (r'professional fee .*', "Revenue", "Service Income"),
+    (r'refund received .*', "Revenue", "Refund & Recovery"),
+    (r'claim received .*', "Revenue", "Refund & Recovery"),
+    (r'insurance claim .*', "Revenue", "Refund & Recovery"),
+    (r'grant(s)? received .*', "Revenue", "Grants & Donations"),
+    (r'donation received .*', "Revenue", "Grants & Donations"),
+    (r'government subsidy .*', "Revenue", "Government Subsidy"),
+    (r'tax refund .*', "Revenue", "Tax Refund"),
+    (r'rebate received .*', "Revenue", "Rebates & Discounts"),
+    (r'cashback received .*', "Revenue", "Rebates & Discounts"),
+
+    # Expenses / Payments (typos, abbreviations)
+    (r'electricit(y|y bill).*', "Expense", "Utilities"),
+    (r'water bill .*', "Expense", "Utilities"),
+    (r'internet bill .*', "Expense", "Utilities"),
+    (r'mobile recharg(e|ing).*', "Expense", "Utilities"),
+    (r'telecom bill .*', "Expense", "Utilities"),
+    (r'data plan .*', "Expense", "Utilities"),
+    (r'vpn service .*', "Expense", "Utilities"),
+    (r'office rent .*', "Expense", "Rent"),
+    (r'freelancer payment .*', "Expense", "Consulting"),
+    (r'consult(ant|ing)? fee .*', "Expense", "Consulting"),
+    (r'printer ink .*', "Expense", "Office Supplies"),
+    (r'office supplies .*', "Expense", "Office Supplies"),
+    (r'snacks for office .*', "Expense", "Office Supplies"),
+    (r'marketing .*', "Expense", "Marketing"),
+    (r'sponsorship .*', "Expense", "Marketing"),
+    (r'travel .*', "Expense", "Travel"),
+    (r'flight .*', "Expense", "Travel"),
+    (r'hotel .*', "Expense", "Travel"),
+    (r'taxi .*', "Expense", "Travel"),
+    (r'uber .*', "Expense", "Travel"),
+    (r'lyft .*', "Expense", "Travel"),
+    (r'airbnb .*', "Expense", "Travel"),
+    (r'expedia .*', "Expense", "Travel"),
+    (r'lunch .*', "Expense", "Meals"),
+    (r'dinner .*', "Expense", "Meals"),
+    (r'coffee .*', "Expense", "Meals"),
+    (r'lunch with client .*', "Expense", "Meals"),
+    (r'dining with client .*', "Expense", "Meals"),
+    (r'client entertainment .*', "Expense", "Entertainment"),
+    (r'insurance .*', "Expense", "Insurance"),
+    (r'loan payment .*', "Expense", "Finance Costs"),
+    (r'bank fee .*', "Expense", "Finance Costs"),
+    (r'wire transfer .*', "Expense", "Finance Costs"),
+    (r'credit card .*', "Expense", "Finance Costs"),
+    (r'vehicle maintenance .*', "Expense", "Vehicles"),
+    (r'generator repair .*', "Expense", "Maintenance & Repairs"),
+    (r'plumbing repair .*', "Expense", "Maintenance & Repairs"),
+    (r'electrical repair .*', "Expense", "Maintenance & Repairs"),
+    (r'legal fees .*', "Expense", "Legal & Professional"),
+    (r'audit fee .*', "Expense", "Audit & Accounting"),
+    (r'software subscription .*', "Expense", "IT & Software"),
+    (r'cloud service .*', "Expense", "IT & Software"),
+    (r'depreciation .*', "Expense", "Depreciation"),
+    (r'bank charges .*', "Expense", "Finance Charges"),
+    (r'loan interest .*', "Expense", "Finance Charges"),
+    (r'late payment fee .*', "Expense", "Finance Charges"),
+    (r'donation .*', "Expense", "Charity"),
+    (r'refund to customer .*', "Expense", "Refund & Recovery"),
+    (r'rebate given .*', "Expense", "Rebates & Discounts"),
+    (r'patent fee .*', "Expense", "Franchise & Licensing"),
+    (r'royalty payment .*', "Expense", "Franchise & Licensing"),
+    (r'franchise fee .*', "Expense", "Franchise & Licensing"),
+    (r'import duty .*', "Expense", "Customs & Duties"),
+    (r'customs charge .*', "Expense", "Customs & Duties"),
+    (r'supplier invoice .*', "Expense", "Supplies"),
+
+    # Payroll / Contractors (typos / variations)
+    (r'payroll .*', "Expense", "Payroll & Benefits"),
+    (r'contractor payment .*', "Expense", "Freelance / Contractors"),
+    (r'freelancer .*', "Expense", "Freelance / Contractors"),
+    (r'upwork .*', "Expense", "Freelance / Contractors"),
+    (r'fiverr .*', "Expense", "Freelance / Contractors"),
+    (r'employee bonus .*', "Expense", "Payroll & Benefits"),
+    (r'employee incentive .*', "Expense", "Payroll & Benefits"),
+    (r'staff welfare .*', "Expense", "Payroll & Benefits"),
+    (r'medical insurance .*', "Expense", "Payroll & Benefits"),
+    (r'life insurance .*', "Expense", "Payroll & Benefits"),
+    (r'pension contribution .*', "Expense", "Payroll & Benefits"),
+    (r'salary advance .*', "Asset", "Employee Advances"),
+    (r'employee loan .*', "Asset", "Employee Advances"),
 ]
+
+
+# ---------------------------
+# Keyword-based Exact Mapping
+# ---------------------------
 CATEGORY_MAP = {
 
-    # ===========================
-    #          ASSETS
-    # ===========================
-
-    # --- Current Assets ---
+    # ASSETS
     "cash": ("Asset", "Cash & Cash Equivalents"),
     "petty cash": ("Asset", "Cash & Cash Equivalents"),
     "bank balance": ("Asset", "Bank Accounts"),
@@ -214,7 +365,7 @@ CATEGORY_MAP = {
     "tax refund receivable": ("Asset", "Tax Refunds"),
     "advance to employee": ("Asset", "Employee Advances"),
 
-    # --- Fixed Assets ---
+    # FIXED ASSETS
     "land": ("Asset", "Land"),
     "building": ("Asset", "Buildings"),
     "factory building": ("Asset", "Buildings"),
@@ -237,7 +388,7 @@ CATEGORY_MAP = {
     "fixtures": ("Asset", "Furniture & Fixtures"),
     "office furniture": ("Asset", "Furniture & Fixtures"),
 
-    # --- Intangible Assets ---
+    # INTANGIBLE ASSETS
     "software license": ("Asset", "Intangible Assets"),
     "software": ("Asset", "Intangible Assets"),
     "patent": ("Asset", "Intangible Assets"),
@@ -245,17 +396,13 @@ CATEGORY_MAP = {
     "copyright": ("Asset", "Intangible Assets"),
     "goodwill": ("Asset", "Goodwill"),
 
-    # --- Investments ---
+    # INVESTMENTS
     "share investment": ("Asset", "Investments"),
     "bond investment": ("Asset", "Investments"),
     "mutual fund": ("Asset", "Investments"),
     "capital investment": ("Asset", "Investments"),
 
-    # ===========================
-    #        LIABILITIES
-    # ===========================
-
-    # --- Current Liabilities ---
+    # LIABILITIES
     "accounts payable": ("Liability", "Accounts Payable"),
     "supplier payable": ("Liability", "Accounts Payable"),
     "vendor payable": ("Liability", "Accounts Payable"),
@@ -277,7 +424,7 @@ CATEGORY_MAP = {
     "interest payable": ("Liability", "Finance Costs"),
     "advance from employee": ("Liability", "Employee Advances"),
 
-    # --- Long-Term Liabilities ---
+    # LONG-TERM LIABILITIES
     "long-term loan": ("Liability", "Long-term Loans"),
     "mortgage": ("Liability", "Long-term Loans"),
     "bond payable": ("Liability", "Bonds Payable"),
@@ -285,9 +432,7 @@ CATEGORY_MAP = {
     "lease liability": ("Liability", "Lease Obligations"),
     "loan repayment": ("Liability", "Loans Payable"),
 
-    # ===========================
-    #            EQUITY
-    # ===========================
+    # EQUITY
     "owner capital": ("Equity", "Owner's Equity"),
     "owner investment": ("Equity", "Owner's Equity"),
     "partner capital": ("Equity", "Partner Equity"),
@@ -298,9 +443,7 @@ CATEGORY_MAP = {
     "dividend": ("Equity", "Dividend Distribution"),
     "profit distribution": ("Equity", "Dividend Distribution"),
 
-    # ===========================
-    #           REVENUE
-    # ===========================
+    # REVENUE
     "sales": ("Revenue", "Product Sales"),
     "product sales": ("Revenue", "Product Sales"),
     "sale of goods": ("Revenue", "Product Sales"),
@@ -331,9 +474,7 @@ CATEGORY_MAP = {
     "rebate received": ("Revenue", "Rebates & Discounts"),
     "grant received": ("Revenue", "Grants & Donations"),
 
-    # ===========================
-    #        EXPENSES
-    # ===========================
+    # EXPENSES
     "electricity bill": ("Expense", "Utilities"),
     "water bill": ("Expense", "Utilities"),
     "internet bill": ("Expense", "Utilities"),

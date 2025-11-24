@@ -130,3 +130,35 @@ Electricity Bill,Expense,Utilities / Rent
 amazon mktplace pmts amzn,Expense,Miscellaneous
 credit - client a,Expense,Miscellaneous
 debit - supplier x,Expense,Miscellaneous
+fuel expense,Expense,Uncategorized
+bonus payout,Expense,Uncategorized
+client payment received,Revenue,Client Payment
+bank fee monthly,Expense,Miscellaneous
+freshbooks monthly,Expense,Miscellaneous
+tcs delivery charge,Expense,Miscellaneous
+bank transfer received,Revenue,Client Payment
+acct transfer credit client 2201,Expense,Misc Payment / Bill (2201)
+hostgator web hosting,Expense,Miscellaneous
+facebk ads 483920,Expense,Misc Payment / Bill (483920)
+zoho corp bill,Expense,Miscellaneous
+pso filling station,Expense,Miscellaneous
+paypal payment 39201,Expense,Misc Payment / Bill (39201)
+online transfer client 2203,Expense,Misc Payment / Bill (2203)
+foodpanda order,Expense,Miscellaneous
+web dev payment 9482,Expense,Misc Payment / Bill (9482)
+paypal payment 55402,Expense,Misc Payment / Bill (55402)
+printing center 331,Expense,Misc Payment / Bill (331)
+client payment 2206,Expense,Misc Payment / Bill (2206)
+api tool payment,Revenue,Client Payment
+paypal client 88430,Expense,Misc Payment / Bill (88430)
+wordpress plugin,Expense,Miscellaneous
+food delivery 3381,Expense,Misc Payment / Bill (3381)
+zoom.us,Expense,Miscellaneous
+amzn office items,Expense,Miscellaneous
+rent pmt online,Expense,Miscellaneous
+credit card cashback,Revenue,Client Payment
+naheed mart snacks,Expense,Miscellaneous
+employee bonus,Expense,Miscellaneous
+pso fuel,Expense,Miscellaneous
+EQUIPMENT REPAIR LN985,Expense,Equipment / Repairs
+SUPPLIES WORLD 3321,Expense,Office Supplies / Materials
