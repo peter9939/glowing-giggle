@@ -17,9 +17,8 @@ def safe_lower(x):
 def normalize_text(s):
     """Normalize description: lowercase, replace smart quotes, remove excessive punctuation, collapse spaces."""
     s = safe_lower(s)
-    s = re.sub(r"[\u2018\u2019\u201c\u201d]", "'", s)              # smart quotes -> '
-    # keep currency symbols, percent, dot, dash, slash and alphanum
-    s = re.sub(r"[^a-z0-9\$\€\£\₹\.\-\/\s]", " ", s)
+    s = re.sub(r"[\u2018\u2019\u201c\u201d]", "'", s)      # smart quotes -> '
+    s = re.sub(r"[^a-z0-9\$\€\£\₹\.\-\/\s]", " ", s)      # keep only allowed chars
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -43,7 +42,6 @@ def load_user_categories():
         try:
             df = pd.read_csv(USER_CAT_FILE)
             if 'Transaction Description' not in df.columns:
-                # malformed file -> replace with proper columns
                 return pd.DataFrame(columns=["Transaction Description", "Main Category", "Subcategory"])
             return df
         except Exception:
@@ -59,15 +57,17 @@ def load_user_categories():
 user_categories_df = load_user_categories()
 
 def save_new_category(desc, main_cat, sub_cat):
-    """Persist a new user mapping if not already there (case-insensitive)."""
+    """Persist a new user mapping if not already there."""
     global user_categories_df
     if not desc or not isinstance(desc, str):
         return
     desc_strip = desc.strip()
-    if user_categories_df.empty:
-        exists = False
-    else:
+
+    if not user_categories_df.empty:
         exists = any(user_categories_df['Transaction Description'].str.lower() == desc_strip.lower())
+    else:
+        exists = False
+
     if not exists:
         new_row = pd.DataFrame([{
             "Transaction Description": desc_strip,
@@ -81,48 +81,42 @@ def save_new_category(desc, main_cat, sub_cat):
             pass
 
 # --------------------------- Core token dictionaries ---------------------- #
-# These lists are intentionally broad — extend them as needed.
 processors = [
-    "stripe", "stripe payout", "stripe settlement", "stripe transfer", "paypal", "paypal payout",
-    "square", "shopify", "shopify payout", "razorpay", "payoneer", "paytm", "flutterwave",
-    "braintree", "adyen", "klarna", "wise", "transferwise", "mollie", "payu"
+    "stripe", "stripe payout", "stripe settlement", "stripe transfer",
+    "paypal", "paypal payout", "square", "shopify", "shopify payout",
+    "razorpay", "payoneer", "paytm", "flutterwave", "braintree",
+    "adyen", "klarna", "wise", "transferwise", "mollie", "payu"
 ]
 
 saas_keywords = [
-    "subscription", "saas", "plan", "license", "monthly", "annual", "renewal", "pro plan", "premium",
-    "software license", "cloud service", "hosting", "web hosting", "domain", "cdn", "api", "tool subscription",
+    "subscription", "saas", "plan", "license", "monthly", "annual",
+    "renewal", "pro plan", "premium", "software license", "cloud service",
+    "hosting", "web hosting", "domain", "cdn", "api", "tool subscription",
     "subscription payment", "subscription fee"
 ]
 
 ecommerce = [
-    "amazon", "amazon mktplace", "amazon marketplace", "amzn", "ebay", "etsy", "daraz", "lazada", "flipkart",
-    "shopify", "woocommerce"
+    "amazon", "amazon mktplace", "amazon marketplace", "amzn", "ebay",
+    "etsy", "daraz", "lazada", "flipkart", "shopify", "woocommerce"
 ]
 
 bank_tokens = [
-    "bank transfer", "ach deposit", "direct deposit", "wire transfer", "credited", "deposit", "transfer from",
-    "transfer to", "withdrawal", "atm", "atm withdrawal", "bank fee", "bank charge", "bank charges", "bank", "eft"
+    "bank transfer", "ach deposit", "direct deposit", "wire transfer",
+    "credited", "deposit", "transfer from", "transfer to", "withdrawal",
+    "atm", "atm withdrawal", "bank fee", "bank charge", "bank charges",
+    "bank", "eft"
 ]
 
 refund_tokens = ["refund", "chargeback", "reversal", "rebate", "refund processed"]
-
 pos_tokens = ["pos", "point of sale", "store", "merchant", "retailer", "supercenter", "checkout"]
-
 food_tokens = ["starbucks", "mcdonald", "kfc", "pizza", "restaurant", "foodpanda", "ubereats", "food delivery", "coffee"]
-
 travel_tokens = ["uber", "careem", "taxi", "flight", "airlines", "hotel", "airbnb", "booking.com", "expedia", "train", "bus"]
-
 marketing_tokens = ["facebook ads", "meta ads", "instagram ads", "google ads", "adwords", "linkedin ads", "ad campaign", "ad agency"]
-
 payroll_tokens = ["payroll", "salary", "wages", "payroll deposit", "direct dep", "payroll direct dep", "payroll dr"]
-
 utility_tokens = ["electricity", "water", "internet", "ptcl", "iesco", "k-electric", "k electric", "gas bill", "phone bill"]
-
 crypto_tokens = ["bitcoin", "btc", "ethereum", "eth", "crypto", "coinbase", "binance", "wallet"]
-
 tax_tokens = ["vat", "gst", "tax", "tax refund", "withholding", "fbr", "customs", "import duty"]
 
-# A compact vendor exact map for high-confidence exact matches (vendor substring -> (Main, Sub))
 vendor_exact_map = {
     "adobe acropro": ("Expense", "Software Subscription"),
     "adobe": ("Expense", "Software Subscription"),
@@ -160,36 +154,37 @@ vendor_exact_map = {
     "bank charges": ("Expense", "Bank Charges"),
 }
 
-# normalize vendor_exact_map keys to lower
 vendor_exact_map = {k.lower(): v for k, v in vendor_exact_map.items()}
 
 # -------------------- Helper matchers ----------------------------------- #
 def match_vendor_exact(desc):
-    """Longest-substring exact match for vendors (high confidence)."""
-    # check longer keys first
     for vendor in sorted(vendor_exact_map.keys(), key=lambda x: -len(x)):
         if vendor in desc:
             return vendor_exact_map[vendor], vendor, 100
     return None, None, 0
 
 def fuzzy_user_lookup(desc):
-    """Fuzzy-match user-saved descriptions (highest precedence)."""
     if user_categories_df is None or user_categories_df.empty:
         return None, None, 0
-    user_map = {str(row['Transaction Description']).lower(): (row['Main Category'], row['Subcategory'])
-                for _, row in user_categories_df.iterrows()}
+
+    user_map = {
+        str(row['Transaction Description']).lower(): (row['Main Category'], row['Subcategory'])
+        for _, row in user_categories_df.iterrows()
+    }
+
     choices = list(user_map.keys())
     if not choices:
         return None, None, 0
+
     match = process.extractOne(desc, choices, scorer=fuzz.token_sort_ratio)
     if match:
         matched_str, score, _ = match
         if score >= 85:
             return user_map[matched_str], matched_str, int(score)
+
     return None, None, 0
 
 def any_token(desc, tokens):
-    """Check if any token exists as substring in desc."""
     for t in tokens:
         if t in desc:
             return True
@@ -198,160 +193,150 @@ def any_token(desc, tokens):
 # ----------------- The main function (kept name) ------------------------- #
 def smart_dynamic_categorization(description):
     """
-    Input: description (string) - raw transaction description (may include amounts)
-    Output: (main_category, subcategory, matched_user_override_bool, confidence_score)
+    Input: description (string)
+    Output: (main_category, subcategory, override_bool, confidence)
     """
 
-    # Normalize
     raw = "" if description is None else str(description)
     desc = normalize_text(raw)
+    amt = extract_amount_from_desc(desc)
 
-    # Extract numeric amount if present (helps determine direction)
-    amt = extract_amount_from_desc(desc)  # may be positive or negative
-    # If amount is None we won't assume based on sign unless forced
-
-    # 1) User overrides (highest priority)
+    # 1) User overrides
     user_match, user_key, user_score = fuzzy_user_lookup(desc)
     if user_match:
         main, sub = user_match
         return main, sub, True, int(user_score)
 
-    # 2) Exact vendor mapping (very high confidence)
+    # 2) Exact vendor match
     vendor_map, vendor_key, vendor_score = match_vendor_exact(desc)
     if vendor_map:
         main, sub = vendor_map
         return main, sub, True, vendor_score
 
-    # 3) Refund / Chargeback detection (treat as expense/refund)
+    # 3) Refund
     if any_token(desc, refund_tokens):
-        # If refund has positive amt -> it's actually customer refund to you? treat as Expense (refund out)
-        # Many bank feed tools mark refunds as positive amounts (refund to customer) or negative (refund from marketplace)
         return "Expense", "Refund / Chargeback", True, 98
 
-    # 4) Processors / aggregators: treat payouts/deposits as Revenue by default
+    # 4) Payment processors
     for p in processors:
         if p in desc:
-            # Recognize 'fee' mentions -> processor fee (expense)
-            if any(k in desc for k in ["fee", "processing fee", "stripe fee", "paypal fee", "charge"]):
+            if any(k in desc for k in ["fee", "processing fee", "stripe fee", "paypal fee"]):
                 return "Expense", f"{p.title()} Fees", True, 96
-            # Recognize 'refund' around processor -> refund
             if any(k in desc for k in refund_tokens):
                 return "Expense", f"{p.title()} Refund", True, 96
-            # Recognize words that indicate deposit/payout/settlement -> Revenue
-            if any(k in desc for k in ["payout", "payouts", "deposit", "settlement", "transfer", "paid out", "credit", "payment received", "payment received", "payment"]):
+            if any(k in desc for k in ["payout", "deposit", "settlement", "transfer", "payment received", "credit"]):
                 return "Revenue", f"Payments via {p.title()}", True, 97
-            # Fallback: treat processor mentions as Revenue (most common/auto rule)
             return "Revenue", f"Payments via {p.title()}", True, 90
 
-    # 5) Bank-specific logic
+    # 5) Bank handling
     if any_token(desc, bank_tokens):
-        # credits/deposits -> Revenue
-        if any(k in desc for k in ["credit", "credited", "deposit", "direct deposit", "credited by", "received"]):
+        if any(k in desc for k in ["credit", "credited", "deposit", "received"]):
             return "Revenue", "Bank Deposit / Transfer", True, 95
-        # charges / withdrawal / paid to -> Expense
-        if any(k in desc for k in ["fee", "bank fee", "withdrawal", "atm", "paid to", "debit", "payment to", "charge"]):
+        if any(k in desc for k in ["fee", "withdrawal", "atm", "debit", "payment to", "charge"]):
             return "Expense", "Bank Fees / Payment", True, 95
-        # sign-aware fallback
         if amt is not None:
-            if amt > 0:
-                return "Revenue", "Bank Transfer / Deposit", True, 92
-            else:
-                return "Expense", "Bank Transfer / Payment", True, 92
+            return ("Revenue", "Bank Transfer / Deposit", True, 92) if amt > 0 else ("Expense", "Bank Transfer / Payment", True, 92)
         return "Expense", "Bank Transaction", True, 85
 
-    # 6) SaaS / hosting / subscription detection (vendor or keyword)
-    if any_token(desc, saas_keywords) or any_token(desc, saas_keywords) or any_token(desc, list(map(lambda v: v.lower(), saas_keywords))):
-        # If string explicitly indicates income -> revenue
-        if any(k in desc for k in ["subscription income", "subscription payment received", "recurring payment received", "membership payment"]):
+    # 6) SaaS / hosting
+    if any_token(desc, saas_keywords):
+        if any(k in desc for k in ["subscription income", "payment received"]):
             return "Revenue", "Subscription Income", True, 94
-        # otherwise likely expense (vendor subscription)
         return "Expense", "SaaS / Software Subscription", True, 94
 
-    # 7) Utilities / telecom / internet
+    # 7) Utilities
     if any_token(desc, utility_tokens):
         return "Expense", "Utilities", True, 96
 
-    # 8) Payroll / salary
+    # 8) Payroll
     if any_token(desc, payroll_tokens):
         return "Expense", "Payroll & Benefits", True, 97
 
-    # 9) Food / beverage
+    # 9) Food
     if any_token(desc, food_tokens):
         return "Expense", "Meals & Entertainment", True, 96
 
-    # 10) Travel / transport
+    # 10) Travel
     if any_token(desc, travel_tokens):
         return "Expense", "Travel / Transport", True, 96
 
-    # 11) Marketing / advertising
+    # 11) Marketing
     if any_token(desc, marketing_tokens):
         return "Expense", "Marketing / Advertising", True, 96
 
-    # 12) POS / retail purchases
+    # 12) POS / eCommerce
     if any_token(desc, pos_tokens) or any_token(desc, ecommerce):
-        # Distinguish marketplace settlements (marketplace->revenue) vs purchases
-        if any(k in desc for k in ["marketplace", "mktplace", "settlement", "payout", "payment received", "payment to seller"]):
+        if any(k in desc for k in ["marketplace", "settlement", "payout", "payment received"]):
             return "Revenue", "E-commerce Sales", True, 95
-        # Amazon has many forms — treat AMZN/Amazon purchases as Expense unless it says marketplace payout/settlement
-        if any(k in desc for k in ["amzn", "amazon purchase", "amazon order", "amazon prime", "amazon.co.uk"]):
+        if any(k in desc for k in ["amzn", "amazon purchase", "amazon order"]):
             return "Expense", "E-commerce Purchases", True, 94
-        # default POS -> expense
         return "Expense", "Retail / POS Purchase", True, 93
 
-    # 13) Crypto / wallets
+    # 13) Crypto
     if any_token(desc, crypto_tokens):
-        # incoming deposit? use sign or 'received' keyword
         if any(k in desc for k in ["received", "deposit", "credited"]):
             return "Revenue", "Crypto / Wallet Inflow", True, 90
-        if any(k in desc for k in ["withdrawal", "sent", "transfer out"]):
+        if any(k in desc for k in ["withdrawal", "sent"]):
             return "Expense", "Crypto / Wallet Outflow", True, 90
         return "Expense", "Crypto / Wallet", True, 80
 
-    # 14) Tax / customs
+    # 14) Tax
     if any_token(desc, tax_tokens):
-        # tax refund -> revenue, tax paid -> expense
-        if any(k in desc for k in ["refund", "tax refund"]):
+        if "refund" in desc:
             return "Revenue", "Tax Refund", True, 92
         return "Expense", "Taxes & Duties", True, 92
 
-    # 15) Refund/chargeback earlier check missed? do again
+    # 15) Re-check refund
     if any_token(desc, refund_tokens):
         return "Expense", "Refund / Chargeback", True, 95
 
     # 16) Generic revenue clues
-    revenue_clues = ["invoice payment", "client payment", "payment from", "payment received", "received payment", "deposit received", "sale", "payment - received"]
+    revenue_clues = ["invoice payment", "client payment", "payment from", "payment received", "received payment", "sale"]
     if any(k in desc for k in revenue_clues):
         return "Revenue", "Sales Income", True, 90
 
     # 17) Generic expense clues
-    expense_clues = ["paid to", "payment to", "purchase", "bill", "billed", "payment -", "charge", "fee", "payment online"]
+    expense_clues = ["paid to", "payment to", "purchase", "bill", "billed", "charge", "fee"]
     if any(k in desc for k in expense_clues):
         return "Expense", "General Expense", True, 85
 
-    # 18) Sign-aware fallback (if amount present)
+    # ---------------- NEW AUTOMATED EXPENSE CATEGORIES ---------------- #
+    additional_expense_tokens = {
+        "Equipment / Repairs": ["equipment repair", "machinery repair", "tool repair", "machine maintenance"],
+        "Office Supplies / Materials": ["supplies", "office supplies", "stationery", "printer paper", "materials", "consumables"],
+        "Consulting / Freelancers": ["consulting", "consultant", "freelancer", "freelance", "contractor"],
+        "Real Estate / Property": ["real estate", "property management", "rent paid", "lease", "mortgage"],
+        "Insurance": ["insurance", "premium", "policy", "vehicle insurance", "health insurance"],
+        "Digital Marketing / Ads": ["digital marketing", "facebook ads", "google ads", "meta ads", "instagram ads", "seo", "sponsorship"]
+    }
+
+    for subcategory, tokens in additional_expense_tokens.items():
+        if any_token(desc, tokens):
+            return "Expense", subcategory, True, 96
+
+    # 18) Sign-aware fallback
     if amt is not None:
-        # Positive amount -> inbound -> revenue (default automation)
         if amt > 0:
             return "Revenue", "Bank / Positive Amount", False, 78
         else:
             return "Expense", "Bank / Negative Amount", False, 78
 
-    # 19) Fuzzy-match remaining keywords (lower confidence)
-    # Combine revenue and expense keywords into master list for fuzzy check
+    # 19) Fuzzy match fallback
     master_keywords = []
-    for kws in [list(map(str.lower, v)) for v in [saas_keywords, ecommerce, bank_tokens, refund_tokens, pos_tokens, food_tokens, travel_tokens, marketing_tokens, payroll_tokens, utility_tokens, crypto_tokens, tax_tokens]]:
-        master_keywords += kws
-    # Remove duplicates
+    for kws in [saas_keywords, ecommerce, bank_tokens, refund_tokens,
+                pos_tokens, food_tokens, travel_tokens, marketing_tokens,
+                payroll_tokens, utility_tokens, crypto_tokens, tax_tokens]:
+        master_keywords += list(map(str.lower, kws))
+
     master_keywords = list(dict.fromkeys(master_keywords))
+
     if master_keywords:
         best = process.extractOne(desc, master_keywords, scorer=fuzz.token_sort_ratio)
         if best and best[1] >= 72:
             kw = best[0]
-            # if found in any revenue indicative list
             if kw in revenue_clues:
                 return "Revenue", "Sales Income", False, int(best[1])
             if kw in expense_clues or kw in utility_tokens or kw in marketing_tokens or kw in payroll_tokens:
-                # map to approximate category based on token membership
                 if kw in utility_tokens:
                     return "Expense", "Utilities", False, int(best[1])
                 if kw in marketing_tokens:
@@ -360,43 +345,20 @@ def smart_dynamic_categorization(description):
                     return "Expense", "Payroll & Benefits", False, int(best[1])
                 return "Expense", "General Expense", False, int(best[1])
 
-    # 20) Persist numeric unknowns as suggested misc expense (helps auto-learn)
+    # 20) Unknown numeric -> misc
     if extract_amount_from_desc(desc) is not None:
-        try:
-            save_new_category(raw, "Expense", "Misc Payment / Auto-Suggest")
-        except Exception:
-            pass
+        save_new_category(raw, "Expense", "Misc Payment / Auto-Suggest")
         return "Expense", "Misc Payment / Auto-Suggest", False, 70
-     # -------------------- New automated category detection -------------------- #
-     additional_expense_tokens = {
-    "Equipment / Repairs": ["equipment repair", "machinery repair", "tool repair", "machine maintenance", "equipment maintenance", "repair service"],
-    "Office Supplies / Materials": ["supplies", "office supplies", "stationery", "printer paper", "materials", "consumables", "stationary"],
-    "Consulting / Freelancers": ["consulting", "consultant", "freelancer", "freelance", "contractor", "outsourced service", "advisor"],
-    "Real Estate / Property": ["real estate", "property management", "rent paid", "lease", "property tax", "mortgage"],
-    "Insurance": ["insurance", "premium", "policy", "vehicle insurance", "health insurance", "life insurance"],
-    "Digital Marketing / Ads": ["digital marketing", "facebook ads", "google ads", "meta ads", "instagram ads", "linkedin ads", "ad campaign", "seo", "sponsorship", "banner printing", "flyer printing"]
-     }
 
-    for subcategory, tokens in additional_expense_tokens.items():
-    if any_token(desc, tokens):
-        return "Expense", subcategory, True, 96
-
-
-    # 21) Final fallback guess
-    main = "Revenue" if any(k in desc for k in ["receive", "received", "credit", "credited", "deposit", "payment from", "payout"]) else "Expense"
+    # 21) Final fallback
+    main = "Revenue" if any(k in desc for k in ["receive", "received", "credit", "deposit"]) else "Expense"
     sub = "Client Payment" if main == "Revenue" else "Miscellaneous"
-    try:
-        save_new_category(raw, main, sub)
-    except Exception:
-        pass
+    save_new_category(raw, main, sub)
     return main, sub, False, 60
 
-# ----------------------- Convenience wrapper ----------------------------- #
+
+# ----------------------- Wrapper -------------------------------- #
 def categorize_description(description, amount=None):
-    """
-    Wrapper for external usage. If `amount` provided, embed it into description for sign-aware heuristics.
-    Returns a dictionary with Main Category, Subcategory, From User Override (bool), Confidence.
-    """
     desc = description if amount is None else f"{description} {amount}"
     main, sub, user_flag, conf = smart_dynamic_categorization(desc)
     return {
@@ -406,7 +368,8 @@ def categorize_description(description, amount=None):
         "Confidence": int(conf)
     }
 
-# --------------------------- Quick tests -------------------------------- #
+
+# --------------------------- Tests -------------------------------- #
 if __name__ == "__main__":
     tests = [
         ("ACH DEPOSIT STRIPE 82920", 320),
@@ -429,6 +392,7 @@ if __name__ == "__main__":
         ("EASYPaisa deposit received", 200),
         ("BINANCE WITHDRAWAL", -0.5),
     ]
+
     for desc, amt in tests:
         res = categorize_description(desc, amt)
         print(f"{desc:40} | {amt:8} | {res['Main Category']:8} | {res['Subcategory'][:30]:30} | conf={res['Confidence']}")
