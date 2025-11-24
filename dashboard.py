@@ -1,504 +1,366 @@
-# dashboard_module.py
-import streamlit as st
+# dashboard_module_refactor.py
+# Production-ready Accounting Dashboard module for Streamlit
+# Robust handling of missing columns, empty categories, and Plotly duplicate element errors
+
+import logging
+from io import BytesIO
+from typing import Dict
+
 import pandas as pd
 import plotly.express as px
-from io import BytesIO
+import streamlit as st
 from fpdf import FPDF
-from fileupload import get_processed_df  # uses your existing fileupload.py
 
-# ---------------- Helpers: load & normalize ---------------- #
-def load_data():
-    """
-    Load processed_df from fileupload module and normalize columns.
-    Ensures Date, Main Category, Subcategory, Balance Change, Description, Auto-Matched exist.
-    """
-    if 'processed_df' not in st.session_state:
-        st.error("No processed data found. Please upload your transactions first in Upload Transactions.")
-        return pd.DataFrame()
+# --- Replace this import with your real fileupload.get_processed_df if needed ---
+# from fileupload import get_processed_df
 
-    df = st.session_state['processed_df'].copy()
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-    # Ensure Date column
-    if 'Date' not in df.columns:
-        df['Date'] = pd.Timestamp.today()
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce').fillna(pd.Timestamp.today())
+REQUIRED_COLS = ['Date', 'Main Category', 'Subcategory', 'Balance Change', 'Description', 'Auto-Matched']
+CASH_ACCOUNT = "Cash / Bank"
 
-    # Ensure essential columns exist
-    essential_cols = ['Main Category', 'Subcategory', 'Balance Change', 'Description', 'Auto-Matched', 'Date']
-    for col in essential_cols:
-        if col not in df.columns:
-            if col == 'Balance Change':
-                df[col] = 0.0
-            elif col == 'Auto-Matched':
-                df[col] = False
-            elif col == 'Date':
-                df[col] = pd.Timestamp.today()
+# ----------------------------- Utilities ------------------------------------
+def ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for c in REQUIRED_COLS:
+        if c not in df.columns:
+            logger.info("Adding missing column: %s", c)
+            if c == 'Date':
+                df[c] = pd.Timestamp.today()
+            elif c == 'Balance Change':
+                df[c] = 0.0
+            elif c == 'Auto-Matched':
+                df[c] = False
             else:
-                df[col] = 'Unknown'
+                df[c] = "Unknown"
 
-    # Normalize column types
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce').fillna(pd.Timestamp.today())
     df['Balance Change'] = pd.to_numeric(df['Balance Change'], errors='coerce').fillna(0.0)
-    df['Description'] = df['Description'].astype(str)
     df['Main Category'] = df['Main Category'].astype(str)
     df['Subcategory'] = df['Subcategory'].astype(str)
-
-    # Keep only the essentials (but preserve others if present)
-    # We'll return full df but guarantee these columns exist
+    df['Description'] = df['Description'].astype(str)
     return df
 
-# ---------------- KPIs ---------------- #
-def compute_kpis(df):
-    revenue = df.loc[df['Main Category'].str.lower() == 'revenue', 'Balance Change'].sum()
-    expense = df.loc[df['Main Category'].str.lower() == 'expense', 'Balance Change'].sum()
+def format_currency(x) -> str:
+    try:
+        return f"${x:,.2f}"
+    except Exception:
+        return str(x)
+
+# ----------------------------- KPI Calculations ------------------------------
+def compute_kpis(df: pd.DataFrame) -> Dict[str, float]:
+    df = df.copy()
+    lookup = lambda key: df[df['Main Category'].str.lower() == key]['Balance Change'].sum()
+
+    revenue = lookup('revenue')
+    expense = lookup('expense')
     net_profit = revenue - expense
-    total_assets = df.loc[df['Main Category'].str.lower() == 'asset', 'Balance Change'].sum()
-    total_liabilities = df.loc[df['Main Category'].str.lower() == 'liability', 'Balance Change'].sum()
-    total_equity = df.loc[df['Main Category'].str.lower() == 'equity', 'Balance Change'].sum()
-    current_ratio = (total_assets / total_liabilities) if total_liabilities != 0 else float('inf')
+    assets = lookup('asset')
+    liabilities = lookup('liability')
+    equity = lookup('equity')
+    current_ratio = (assets / liabilities) if liabilities not in (0, 0.0) else float('inf')
+
     return {
         'Revenue': revenue,
         'Expense': expense,
         'Net Profit': net_profit,
-        'Total Assets': total_assets,
-        'Total Liabilities': total_liabilities,
-        'Total Equity': total_equity,
+        'Total Assets': assets,
+        'Total Liabilities': liabilities,
+        'Total Equity': equity,
         'Current Ratio': current_ratio
     }
 
-# ---------------- Export Functions ---------------- #
-def to_excel(df_dict):
+# ----------------------------- Export Helpers --------------------------------
+def to_excel(df_dict: Dict[str, pd.DataFrame]) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        for sheet_name, df in df_dict.items():
-            df.to_excel(writer, index=False, sheet_name=sheet_name)
-            worksheet = writer.sheets[sheet_name]
-            # Set reasonable column widths
+        for sheet, df in df_dict.items():
+            df.to_excel(writer, index=False, sheet_name=sheet[:31])
+            ws = writer.sheets[sheet[:31]]
             for i, col in enumerate(df.columns):
                 try:
-                    col_width = max(df[col].astype(str).map(len).max(), len(col)) + 2
+                    width = max(df[col].astype(str).map(len).max(), len(col)) + 2
                 except Exception:
-                    col_width = len(col) + 2
-                worksheet.set_column(i, i, col_width)
+                    width = len(col) + 2
+                ws.set_column(i, i, width)
     output.seek(0)
     return output.getvalue()
 
-def export_pdf(df_dict, kpis):
+def export_pdf(df_dict: Dict[str, pd.DataFrame], kpis: Dict[str, float]) -> bytes:
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, 'Professional Accounting Dashboard Report', ln=True, align='C')
-    pdf.ln(6)
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, 'Key Performance Indicators', ln=True)
-    pdf.set_font("Arial", '', 10)
+    pdf.set_font('Arial', 'B', 16)
+    pdf.cell(0, 10, 'Accounting Dashboard Report', ln=True, align='C')
+    pdf.ln(4)
+
+    pdf.set_font('Arial', 'B', 12)
+    pdf.cell(0, 8, 'Key Performance Indicators', ln=True)
+    pdf.set_font('Arial', '', 10)
     for k, v in kpis.items():
-        if isinstance(v, (int, float)):
-            text = f'{k}: ${v:,.2f}'
+        if isinstance(v, (int, float)) and not (v == float('inf')):
+            pdf.cell(0, 6, f"{k}: {v:,.2f}", ln=True)
         else:
-            text = f'{k}: {v}'
-        pdf.cell(0, 8, text, ln=True)
-    pdf.ln(6)
+            pdf.cell(0, 6, f"{k}: {v}", ln=True)
 
+    pdf.ln(4)
     for name, df in df_dict.items():
+        pdf.set_font('Arial', 'B', 12)
+        pdf.cell(0, 8, name, ln=True)
+        pdf.set_font('Arial', '', 8)
         if df.empty:
+            pdf.cell(0, 6, 'No data', ln=True)
             continue
-        pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, name, ln=True)
-        pdf.set_font("Arial", '', 8)
-        # table header
-        col_count = len(df.columns)
-        page_width = pdf.w - 2 * pdf.l_margin
-        col_w = page_width / max(col_count, 1)
+        cols = list(df.columns)[:8]
+        col_width = (pdf.w - 2 * pdf.l_margin) / len(cols)
         th = 6
-        # header row
-        for col in df.columns:
-            pdf.cell(col_w, th, str(col)[:20], border=1)
+        for col in cols:
+            pdf.cell(col_width, th, str(col)[:20], border=1)
         pdf.ln(th)
-        # rows (capped length per cell)
-        for row in df.values.tolist():
+        for row in df[cols].values.tolist():
             for item in row:
-                text = str(item).replace("–", "-").replace("—", "-")
-                pdf.cell(col_w, th, text[:20], border=1)
+                pdf.cell(col_width, th, str(item)[:20], border=1)
             pdf.ln(th)
-        pdf.ln(4)
+    buf = BytesIO()
+    pdf.output(buf)
+    buf.seek(0)
+    return buf.read()
 
-    pdf_output = BytesIO()
-    pdf.output(pdf_output)
-    pdf_output.seek(0)
-    return pdf_output.read()
-
-# ---------------- Journal & Ledger generation (CORRECTED double-entry) ---------------- #
-def generate_journal_entries(df):
-    """
-    Generate proper double-entry journal entries using Option A:
-    - Debit/Credit pairs are auto generated using Cash / Bank as the counter account.
-    - For unknown categories, use 'Suspense' as counteraccount.
-    """
-    journal_entries = []
-    # Normalize main category for matching
+# ----------------------------- Journal & Ledger ------------------------------
+def generate_journal_entries(df: pd.DataFrame) -> pd.DataFrame:
+    journal = []
     df = df.copy()
-    df['main_lower'] = df['Main Category'].str.strip().str.lower()
+    df['main_lower'] = df['Main Category'].str.lower()
 
-    for _, row in df.iterrows():
-        amount = float(row['Balance Change'] or 0.0)
-        # Use absolute magnitude for ledger entries; direction determined by category logic
-        amt = abs(amount)
-        date = row['Date']
-        desc = row.get('Description', '') or ''
-        main_cat = row.get('main_lower', '')
+    for _, r in df.iterrows():
+        amt = abs(float(r['Balance Change'] or 0))
+        if amt == 0:
+            continue
+        date = r['Date']
+        desc = r['Description']
+        acct = f"{r['Main Category']} - {r['Subcategory']}"
+        cat = r['main_lower']
 
-        # Set default accounts
-        cash_account = "Cash / Bank"
-        suspense_account = "Suspense"
-
-        # Revenue: Credit revenue, Debit Cash/Bank
-        if main_cat == 'revenue':
-            journal_entries.append({
-                "Date": date,
-                "Description": desc,
-                "Debit Account": cash_account,
-                "Debit": amt,
-                "Credit Account": row['Main Category'] + " - " + row['Subcategory'],
-                "Credit": amt
-            })
-        # Expense: Debit Expense, Credit Cash/Bank
-        elif main_cat == 'expense':
-            journal_entries.append({
-                "Date": date,
-                "Description": desc,
-                "Debit Account": row['Main Category'] + " - " + row['Subcategory'],
-                "Debit": amt,
-                "Credit Account": cash_account,
-                "Credit": amt
-            })
-        # Asset increase: Debit Asset, Credit Cash/Bank (e.g., equipment purchased -> asset increases and cash decreases)
-        elif main_cat == 'asset':
-            journal_entries.append({
-                "Date": date,
-                "Description": desc,
-                "Debit Account": row['Main Category'] + " - " + row['Subcategory'],
-                "Debit": amt,
-                "Credit Account": cash_account,
-                "Credit": amt
-            })
-        # Liability increase (e.g., loan received): Credit Liability, Debit Cash/Bank
-        elif main_cat == 'liability':
-            journal_entries.append({
-                "Date": date,
-                "Description": desc,
-                "Debit Account": cash_account,
-                "Debit": amt,
-                "Credit Account": row['Main Category'] + " - " + row['Subcategory'],
-                "Credit": amt
-            })
-        # Equity increase: Credit Equity, Debit Cash/Bank
-        elif main_cat == 'equity':
-            journal_entries.append({
-                "Date": date,
-                "Description": desc,
-                "Debit Account": cash_account,
-                "Debit": amt,
-                "Credit Account": row['Main Category'] + " - " + row['Subcategory'],
-                "Credit": amt
-            })
-        # Uncategorized or unknown: put amount to Suspense vs Cash/Bank (safe default)
+        if cat == 'revenue':
+            journal.append({'Date': date, 'Description': desc,
+                            'Debit Account': CASH_ACCOUNT, 'Debit': amt,
+                            'Credit Account': acct, 'Credit': amt})
+        elif cat == 'expense':
+            journal.append({'Date': date, 'Description': desc,
+                            'Debit Account': acct, 'Debit': amt,
+                            'Credit Account': CASH_ACCOUNT, 'Credit': amt})
+        elif cat == 'asset':
+            journal.append({'Date': date, 'Description': desc,
+                            'Debit Account': acct, 'Debit': amt,
+                            'Credit Account': CASH_ACCOUNT, 'Credit': amt})
+        elif cat == 'liability':
+            journal.append({'Date': date, 'Description': desc,
+                            'Debit Account': CASH_ACCOUNT, 'Debit': amt,
+                            'Credit Account': acct, 'Credit': amt})
+        elif cat == 'equity':
+            journal.append({'Date': date, 'Description': desc,
+                            'Debit Account': CASH_ACCOUNT, 'Debit': amt,
+                            'Credit Account': acct, 'Credit': amt})
         else:
-            # If amount is positive — assume Cash increase, credit Suspense
-            journal_entries.append({
-                "Date": date,
-                "Description": desc,
-                "Debit Account": cash_account,
-                "Debit": amt,
-                "Credit Account": suspense_account,
-                "Credit": amt
-            })
+            journal.append({'Date': date, 'Description': desc,
+                            'Debit Account': acct, 'Debit': amt,
+                            'Credit Account': CASH_ACCOUNT, 'Credit': amt})
 
-    journal_df = pd.DataFrame(journal_entries)
-    # Ensure numeric types
-    if not journal_df.empty:
-        journal_df['Debit'] = pd.to_numeric(journal_df['Debit'], errors='coerce').fillna(0.0)
-        journal_df['Credit'] = pd.to_numeric(journal_df['Credit'], errors='coerce').fillna(0.0)
-    return journal_df
+    jdf = pd.DataFrame(journal)
+    if not jdf.empty:
+        jdf['Debit'] = pd.to_numeric(jdf['Debit'], errors='coerce').fillna(0.0)
+        jdf['Credit'] = pd.to_numeric(jdf['Credit'], errors='coerce').fillna(0.0)
+    return jdf
 
-def build_ledger_from_journal(journal_df):
-    """
-    Convert journal entries into ledger rows (debits and credits as separate rows)
-    and compute running balances per account.
-    """
-    ledger_rows = []
-    for _, row in journal_df.iterrows():
-        # Debit row
-        ledger_rows.append({
-            "Account": row['Debit Account'],
-            "Date": row['Date'],
-            "Description": row['Description'],
-            "Debit": row['Debit'],
-            "Credit": 0.0
-        })
-        # Credit row
-        ledger_rows.append({
-            "Account": row['Credit Account'],
-            "Date": row['Date'],
-            "Description": row['Description'],
-            "Debit": 0.0,
-            "Credit": row['Credit']
-        })
+def build_ledger_from_journal(jdf: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for _, r in jdf.iterrows():
+        rows.append({'Account': r['Debit Account'], 'Date': r['Date'], 'Description': r['Description'],
+                     'Debit': r['Debit'], 'Credit': 0.0})
+        rows.append({'Account': r['Credit Account'], 'Date': r['Date'], 'Description': r['Description'],
+                     'Debit': 0.0, 'Credit': r['Credit']})
 
-    ledger_df = pd.DataFrame(ledger_rows)
-    if ledger_df.empty:
-        return ledger_df
+    ledger = pd.DataFrame(rows)
+    if ledger.empty:
+        return ledger
+    ledger['Date'] = pd.to_datetime(ledger['Date'], errors='coerce').fillna(pd.Timestamp.today())
+    ledger.sort_values(['Account', 'Date'], inplace=True)
+    ledger['Running Balance'] = ledger.groupby('Account').apply(lambda g: (g['Debit'] - g['Credit']).cumsum()).reset_index(level=0, drop=True)
+    return ledger
 
-    # Normalize numeric columns
-    ledger_df['Debit'] = pd.to_numeric(ledger_df['Debit'], errors='coerce').fillna(0.0)
-    ledger_df['Credit'] = pd.to_numeric(ledger_df['Credit'], errors='coerce').fillna(0.0)
-
-    ledger_df.sort_values(['Account', 'Date'], inplace=True)
-    # Running balance per account: cumulative (Debit - Credit)
-    ledger_df['Running Balance'] = ledger_df.groupby('Account').apply(
-        lambda g: (g['Debit'] - g['Credit']).cumsum()
-    ).reset_index(level=0, drop=True)
-    return ledger_df
-
-# ---------------- Dashboard Module ---------------- #
+# ----------------------------- Dashboard UI ----------------------------------
 def dashboard_module():
-    st.title("📊 Professional Accounting Dashboard (Production Ready)")
+    st.set_page_config(page_title='Accounting Dashboard', layout='wide')
+    st.title('📊 Accounting Dashboard (0% VAT — Real Double Entry)')
 
-    df = load_data()
-    if df.empty:
+    if 'processed_df' not in st.session_state:
+        st.error('No processed data found. Please upload data first.')
         return
 
-    # Sidebar Filters
-    st.sidebar.header("Filters")
-    start_date = st.sidebar.date_input("Start Date", df['Date'].min().date())
-    end_date = st.sidebar.date_input("End Date", df['Date'].max().date())
-    main_categories = st.sidebar.multiselect("Main Category", sorted(df['Main Category'].unique().tolist()))
-    sub_categories = st.sidebar.multiselect("Subcategory", sorted(df['Subcategory'].unique().tolist()))
-    keyword = st.sidebar.text_input("Search Description")
+    df = st.session_state['processed_df']
+    df = ensure_columns(df)
 
-    # Apply filters
-    df_filtered = df[(df['Date'] >= pd.to_datetime(start_date)) & (df['Date'] <= pd.to_datetime(end_date))]
-    if main_categories:
-        df_filtered = df_filtered[df_filtered['Main Category'].isin(main_categories)]
-    if sub_categories:
-        df_filtered = df_filtered[df_filtered['Subcategory'].isin(sub_categories)]
+    # Sidebar filters
+    st.sidebar.header('Filters')
+    min_date = df['Date'].min().date() if not df.empty else pd.Timestamp.today().date()
+    max_date = df['Date'].max().date() if not df.empty else pd.Timestamp.today().date()
+    start = st.sidebar.date_input('Start Date', min_date)
+    end = st.sidebar.date_input('End Date', max_date)
+    cats = st.sidebar.multiselect('Main Category', sorted(df['Main Category'].unique().tolist()))
+    subs = st.sidebar.multiselect('Subcategory', sorted(df['Subcategory'].unique().tolist()))
+    keyword = st.sidebar.text_input('Search Description')
+
+    df_f = df[(df['Date'] >= pd.to_datetime(start)) & (df['Date'] <= pd.to_datetime(end))]
+    if cats:
+        df_f = df_f[df_f['Main Category'].isin(cats)]
+    if subs:
+        df_f = df_f[df_f['Subcategory'].isin(subs)]
     if keyword:
-        df_filtered = df_filtered[df_filtered['Description'].str.contains(keyword, case=False, na=False)]
+        df_f = df_f[df_f['Description'].str.contains(keyword, case=False, na=False)]
 
-    if df_filtered.empty:
-        st.warning("No transactions found for the selected filters.")
+    if df_f.empty:
+        st.warning('No data matches filters.')
         return
 
     # KPIs
-    kpis = compute_kpis(df_filtered)
-    st.subheader("Key Performance Indicators")
-    kcol1, kcol2, kcol3 = st.columns(3)
-    kcol1.metric("Revenue", f"${kpis['Revenue']:,.2f}")
-    kcol2.metric("Expense", f"${kpis['Expense']:,.2f}")
-    kcol3.metric("Net Profit", f"${kpis['Net Profit']:,.2f}")
-    kcol4, kcol5, kcol6 = st.columns(3)
-    kcol4.metric("Total Assets", f"${kpis['Total Assets']:,.2f}")
-    kcol5.metric("Total Liabilities", f"${kpis['Total Liabilities']:,.2f}")
-    kcol6.metric("Total Equity", f"${kpis['Total Equity']:,.2f}")
-    try:
-        cr_display = f"{kpis['Current Ratio']:.2f}" if kpis['Current Ratio'] != float('inf') else "∞"
-    except Exception:
-        cr_display = "N/A"
-    st.metric("Current Ratio", cr_display)
+    kpi = compute_kpis(df_f)
+    st.subheader('Key Performance Indicators')
+    c1, c2, c3 = st.columns(3)
+    c1.metric('Revenue', format_currency(kpi['Revenue']))
+    c2.metric('Expense', format_currency(kpi['Expense']))
+    c3.metric('Net Profit', format_currency(kpi['Net Profit']))
+    c4, c5, c6 = st.columns(3)
+    c4.metric('Total Assets', format_currency(kpi['Total Assets']))
+    c5.metric('Total Liabilities', format_currency(kpi['Total Liabilities']))
+    c6.metric('Total Equity', format_currency(kpi['Total Equity']))
+    ratio_display = f"{kpi['Current Ratio']:.2f}" if kpi['Current Ratio'] != float('inf') else '∞'
+    st.metric('Current Ratio', ratio_display)
 
-    # Tabs
-    tabs = st.tabs(["Trial Balance", "Income Statement", "Balance Sheet", "Cash Flow", "P&L", "Category Drilldown", "Journal & Ledger"])
+    tabs = st.tabs(['Trial Balance', 'Income Statement', 'Balance Sheet', 'Cash Flow',
+                    'P&L Monthly', 'Category Drilldown', 'Journal & Ledger'])
 
-    # ---------- Trial Balance ----------
+    # -------------------- Trial Balance ---------------------------------
     with tabs[0]:
-        st.subheader("Trial Balance")
-        trial_cols = ['Main Category', 'Subcategory', 'Balance Change']
-        trial = df_filtered[trial_cols].copy()
-        # produce Debit/Credit columns according to main category
-        def calc_debit_credit(r):
-            mc = str(r['Main Category']).strip().lower()
-            amt = float(r['Balance Change'])
-            if mc == 'expense' or mc == 'asset':
-                # treat as debit
-                return pd.Series([abs(amt), 0.0])
-            elif mc == 'revenue' or mc == 'liability' or mc == 'equity':
-                return pd.Series([0.0, abs(amt)])
-            else:
-                # unknown: put in debit
-                return pd.Series([max(amt, 0.0), max(-amt, 0.0)])
-        trial[['Debit', 'Credit']] = trial.apply(calc_debit_credit, axis=1)
-        trial['Status'] = trial.apply(lambda r: 'Balanced' if abs(r['Debit'] - r['Credit']) < 0.01 else 'Check', axis=1)
-        st.dataframe(trial[['Main Category', 'Subcategory', 'Debit', 'Credit', 'Balance Change', 'Status']])
-
-        # Main Category Chart
-        trial_summary = trial.groupby('Main Category')[['Debit', 'Credit']].sum().reset_index()
-        if not trial_summary.empty:
-            fig = px.bar(trial_summary, x='Main Category', y=['Debit', 'Credit'], barmode='group',
-                         title='Trial Balance by Main Category', text_auto='.2f')
-            st.plotly_chart(fig, use_container_width=True)
-
-        total_debit = trial['Debit'].sum()
-        total_credit = trial['Credit'].sum()
-        if abs(total_debit - total_credit) < 0.01:
-            st.success(f"✅ Total Trial Balance is balanced (Debit={total_debit:,.2f}, Credit={total_credit:,.2f})")
+        st.subheader('Trial Balance')
+        tb = df_f.copy()
+        def tb_dc(r):
+            mc = str(r['Main Category']).lower()
+            amt = abs(float(r['Balance Change'] or 0))
+            if mc in ['expense', 'asset']:
+                return pd.Series([amt, 0.0])
+            if mc in ['revenue', 'liability', 'equity']:
+                return pd.Series([0.0, amt])
+            return pd.Series([amt, 0.0])
+        tb[['Debit', 'Credit']] = tb.apply(tb_dc, axis=1)
+        st.dataframe(tb[['Main Category', 'Subcategory', 'Debit', 'Credit']])
+        ttl_d, ttl_c = tb['Debit'].sum(), tb['Credit'].sum()
+        if abs(ttl_d - ttl_c) < 0.01:
+            st.success(f"Balanced ✓ Debit={ttl_d:,.2f} Credit={ttl_c:,.2f}")
         else:
-            st.error(f"⚠️ Total Trial Balance NOT balanced! Debit={total_debit:,.2f}, Credit={total_credit:,.2f}")
+            st.error(f"NOT Balanced ✗ Debit={ttl_d:,.2f} Credit={ttl_c:,.2f}")
 
-    # ---------- Income Statement ----------
+    # -------------------- Income Statement ------------------------------
     with tabs[1]:
-        st.subheader("Income Statement")
-        income = df_filtered[df_filtered['Main Category'].str.lower().isin(['revenue', 'expense'])]
-        if not income.empty:
-            main_summary = income.groupby('Main Category')['Balance Change'].sum().reset_index()
-            st.markdown("**By Main Category**")
-            st.dataframe(main_summary)
-            fig_main = px.bar(main_summary, x='Main Category', y='Balance Change', color='Main Category',
-                              title='Income Statement - Main Category', text='Balance Change')
-            fig_main.update_traces(texttemplate='%{text:,.2f}', textposition='outside')
-            st.plotly_chart(fig_main, use_container_width=True)
+        st.subheader('Income Statement (0% VAT)')
+        inc = df_f[df_f['Main Category'].str.lower().isin(['revenue', 'expense'])]
+        if inc.empty:
+            st.info('No Revenue/Expense items in the selected date range.')
+        else:
+            g = inc.groupby('Main Category')['Balance Change'].sum().reset_index()
+            st.dataframe(g)
+            g['Balance Change'] = pd.to_numeric(g['Balance Change'], errors='coerce').fillna(0.0)
+            st.plotly_chart(px.bar(g, x='Main Category', y='Balance Change'), use_container_width=True, key='income_statement_bar')
 
-            sub_summary = income.groupby('Subcategory')['Balance Change'].sum().reset_index()
-            st.markdown("**By Subcategory**")
-            st.dataframe(sub_summary)
-            fig_sub = px.bar(sub_summary, x='Subcategory', y='Balance Change', color='Subcategory',
-                             title='Income Statement - Subcategory', text='Balance Change')
-            fig_sub.update_traces(texttemplate='%{text:,.2f}', textposition='outside')
-            st.plotly_chart(fig_sub, use_container_width=True)
-
-    # ---------- Balance Sheet ----------
+    # -------------------- Balance Sheet ---------------------------------
     with tabs[2]:
-        st.subheader("Balance Sheet")
-        bs = df_filtered[df_filtered['Main Category'].str.lower().isin(['asset', 'liability', 'equity'])]
-        categories = ['Asset', 'Liability', 'Equity']
-        bs_summary = bs.groupby('Main Category')['Balance Change'].sum().reindex(categories, fill_value=0).reset_index()
-        st.dataframe(bs_summary)
-        fig_bs = px.bar(bs_summary, x='Main Category', y='Balance Change', color='Main Category',
-                        title='Balance Sheet Overview')
-        st.plotly_chart(fig_bs, use_container_width=True)
-        # Balance check
-        if abs(kpis['Total Assets'] - (kpis['Total Liabilities'] + kpis['Total Equity'])) < 0.01:
-            st.success("✅ Balance Sheet is balanced (Assets = Liabilities + Equity)")
+        st.subheader('Balance Sheet')
+        bs = df_f[df_f['Main Category'].str.lower().isin(['asset', 'liability', 'equity'])]
+        if bs.empty:
+            st.info('No Asset/Liability/Equity items in the selected date range.')
         else:
-            st.error("⚠️ Balance Sheet NOT balanced!")
+            bs_sum = bs.groupby('Main Category')['Balance Change'].sum().reset_index()
+            st.dataframe(bs_sum)
+            st.plotly_chart(px.bar(bs_sum, x='Main Category', y='Balance Change'), use_container_width=True, key='balance_sheet_bar')
+            if abs(kpi['Total Assets'] - (kpi['Total Liabilities'] + kpi['Total Equity'])) < 0.01:
+                st.success('Balanced ✓ Assets = Liabilities + Equity')
+            else:
+                st.error('NOT Balanced ✗ Asset equation incorrect')
 
-    # ---------- Cash Flow ----------
+    # -------------------- Cash Flow -------------------------------------
     with tabs[3]:
-        st.subheader("Cash Flow")
-        cash_df = df_filtered[df_filtered['Main Category'].str.lower().isin(['revenue', 'expense', 'liability', 'equity'])]
-        if not cash_df.empty:
-            cash_df = cash_df.copy()
-            # classify type: revenue -> cash in, expense -> cash out; liability/equity movements treated as financing
-            def classify_cash(x):
-                mc = x['Main Category'].strip().lower()
-                if mc == 'revenue':
-                    return 'Cash In (Revenue)'
-                if mc == 'expense':
-                    return 'Cash Out (Expense)'
-                if mc == 'liability':
-                    return 'Cash In/Out (Liability)'
-                if mc == 'equity':
-                    return 'Cash In/Out (Equity)'
-                return 'Other'
-            cash_df['Type'] = cash_df.apply(classify_cash, axis=1)
-            cash_df['Month'] = cash_df['Date'].dt.to_period('M').astype(str)
-            cash_flow = cash_df.groupby(['Month', 'Type'])['Balance Change'].sum().reset_index()
-            st.dataframe(cash_flow)
-            fig_cash = px.bar(cash_flow, x='Month', y='Balance Change', color='Type', barmode='group',
-                              title='Monthly Cash Flow (AR vs AP)', text='Balance Change')
-            fig_cash.update_traces(texttemplate='%{text:,.2f}', textposition='outside')
-            st.plotly_chart(fig_cash, use_container_width=True)
+        st.subheader('Cash Flow')
+        cf = df_f.copy()
+        cf['Month'] = cf['Date'].dt.to_period('M').astype(str)
+        cf['Type'] = cf['Main Category'].apply(lambda mc: 'Cash In' if mc.lower()=='revenue' else ('Cash Out' if mc.lower()=='expense' else ('Financing' if mc.lower() in ['equity','liability'] else 'Other')))
+        g = cf.groupby(['Month','Type'])['Balance Change'].sum().reset_index()
+        st.dataframe(g)
+        pivot = g.pivot(index='Month', columns='Type', values='Balance Change').fillna(0).reset_index()
+        st.plotly_chart(px.bar(pivot, x='Month', y=pivot.columns[1:].tolist(), barmode='group'), use_container_width=True, key='cash_flow_bar')
 
-    # ---------- P&L ----------
+    # -------------------- P&L Monthly -----------------------------------
     with tabs[4]:
-        st.subheader("Profit & Loss Statement")
-        pnl = df_filtered[df_filtered['Main Category'].str.lower().isin(['revenue', 'expense'])]
-        if not pnl.empty:
-            pnl = pnl.copy()
-            pnl['Month'] = pnl['Date'].dt.to_period('M').astype(str)
-            pnl_summary = pnl.groupby(['Month', 'Main Category'])['Balance Change'].sum().unstack().fillna(0)
-            # Ensure Revenue and Expense exist
-            pnl_summary['Revenue'] = pnl_summary.get('Revenue', 0)
-            pnl_summary['Expense'] = pnl_summary.get('Expense', 0)
-            pnl_summary['Net Profit'] = pnl_summary['Revenue'] - pnl_summary['Expense']
-            pnl_summary = pnl_summary.reset_index()
-            st.dataframe(pnl_summary)
-            fig_pnl = px.bar(pnl_summary, x='Month', y=['Revenue', 'Expense'], barmode='group', title='Monthly Revenue vs Expense', text_auto='.2f')
-            st.plotly_chart(fig_pnl, use_container_width=True)
-            fig_net = px.line(pnl_summary, x='Month', y='Net Profit', markers=True, title='Monthly Net Profit Trend')
-            st.plotly_chart(fig_net, use_container_width=True)
+        st.subheader('Profit & Loss (Monthly)')
+        pl = df_f[df_f['Main Category'].str.lower().isin(['revenue','expense'])].copy()
+        if pl.empty:
+            st.info('No P&L items in selected date range.')
+        else:
+            pl['Month'] = pl['Date'].dt.to_period('M')
+            g = pl.groupby([pl['Month'].astype(str),'Main Category'])['Balance Change'].sum().unstack(fill_value=0)
+            for col in ['Revenue','Expense']:
+                if col not in g.columns:
+                    g[col]=0.0
+            g.index = pd.PeriodIndex(g.index, freq='M').to_timestamp()
+            g = g.sort_index().rename_axis('Month')
+            g['Net Profit'] = g['Revenue'] - g['Expense']
+            st.dataframe(g.reset_index())
+            plot_df = g.reset_index()
+            plot_df['Month'] = plot_df['Month'].dt.to_period('M').astype(str)
+            st.plotly_chart(px.bar(plot_df, x='Month', y=['Revenue','Expense'], barmode='group'), use_container_width=True, key='pl_monthly_bar')
+            st.plotly_chart(px.line(plot_df, x='Month', y='Net Profit', markers=True), use_container_width=True, key='pl_monthly_line')
 
-    # ---------- Category Drilldown ----------
+    # -------------------- Category Drilldown -----------------------------
     with tabs[5]:
-        st.subheader("Category Drilldown")
-        main_cat_summary = df_filtered.groupby('Main Category')['Balance Change'].sum().reset_index()
-        if not main_cat_summary.empty:
-            fig = px.bar(main_cat_summary, x='Main Category', y='Balance Change', color='Main Category',
-                         title="Main Category Overview", text='Balance Change')
-            fig.update_traces(texttemplate='%{text:,.2f}', textposition='outside')
-            st.plotly_chart(fig, use_container_width=True)
+        st.subheader('Category Drilldown')
+        mc = df_f.groupby('Main Category')['Balance Change'].sum().reset_index()
+        if mc.empty:
+            st.info('No categories to display.')
+        else:
+            st.plotly_chart(px.bar(mc, x='Main Category', y='Balance Change'), use_container_width=True, key='category_drilldown_bar')
+            choose = st.selectbox('Select Category', [''] + mc['Main Category'].tolist())
+            if choose:
+                sub = df_f[df_f['Main Category']==choose].groupby('Subcategory')['Balance Change'].sum().reset_index()
+                st.plotly_chart(px.bar(sub, x='Subcategory', y='Balance Change'), use_container_width=True, key=f'subcategory_drilldown_{choose}')
+                st.dataframe(sub)
 
-        selected_main_cat = st.selectbox("Select Main Category for Drilldown", [''] + main_cat_summary['Main Category'].tolist())
-        if selected_main_cat:
-            subcat_df = df_filtered[df_filtered['Main Category'] == selected_main_cat]
-            subcat_summary = subcat_df.groupby('Subcategory')['Balance Change'].sum().reset_index()
-            fig2 = px.bar(subcat_summary, x='Subcategory', y='Balance Change', color='Subcategory',
-                          title=f"Subcategories under {selected_main_cat}", text='Balance Change')
-            fig2.update_traces(texttemplate='%{text:,.2f}', textposition='outside')
-            st.plotly_chart(fig2, use_container_width=True)
-            st.dataframe(subcat_summary)
-
-    # ---------- Journal & Ledger ----------
+    # -------------------- Journal & Ledger -------------------------------
     with tabs[6]:
-        st.subheader("📘 Journal & Ledger")
-        # Prepare journal entries using corrected double-entry mappings
-        jdf = df_filtered.copy()
-        # Create a human-readable account name for each row if not present
-        if 'Account' not in jdf.columns:
-            jdf['Account'] = jdf['Main Category'].astype(str) + " - " + jdf['Subcategory'].astype(str)
-        if 'Description' not in jdf.columns:
-            jdf['Description'] = "No Description"
+        st.subheader('Journal Entries')
+        jdf = generate_journal_entries(df_f)
+        st.dataframe(jdf)
 
-        journal_df = generate_journal_entries(jdf)
-        st.subheader("📄 Journal Entries")
-        if not journal_df.empty:
-            # reorder columns for readability
-            cols_order = ['Date', 'Description', 'Debit Account', 'Debit', 'Credit Account', 'Credit']
-            cols_present = [c for c in cols_order if c in journal_df.columns]
-            st.dataframe(journal_df[cols_present])
-        else:
-            st.info("No journal entries generated.")
+        st.subheader('Ledger')
+        ledger = build_ledger_from_journal(jdf)
+        st.dataframe(ledger)
 
-        # Build ledger from journal
-        ledger_df = build_ledger_from_journal(journal_df)
-        st.subheader("📚 Ledger")
-        if not ledger_df.empty:
-            st.dataframe(ledger_df)
-            summary = ledger_df.groupby("Account").agg({"Debit": "sum", "Credit": "sum"}).reset_index()
-            summary["Closing Balance"] = summary["Debit"] - summary["Credit"]
-            st.subheader("📘 Ledger Summary")
-            st.dataframe(summary)
-            # Running Balance chart selector
-            st.subheader("📈 Ledger Balance Charts")
-            selected_acct = st.selectbox("Select Account", summary["Account"].unique())
-            if selected_acct:
-                acct_df = ledger_df[ledger_df["Account"] == selected_acct]
-                fig = px.line(acct_df, x="Date", y="Running Balance", title=f"Running Balance - {selected_acct}", markers=True)
-                st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Ledger is empty (no journal entries).")
+        if not ledger.empty:
+            st.subheader('Ledger Summary')
+            s = ledger.groupby('Account')[['Debit','Credit']].sum()
+            s['Closing Balance'] = s['Debit'] - s['Credit']
+            st.dataframe(s.reset_index())
 
-    # ---------------- Download Reports ---------------- #
-    st.markdown("---")
-    st.subheader("📥 Download Reports")
-    df_dict = {'Raw Data': df_filtered}
-    # include main category summary if available
-    if 'main_cat_summary' in locals() and not main_cat_summary.empty:
-        df_dict['Main Category Summary'] = main_cat_summary
-    if 'selected_main_cat' in locals() and selected_main_cat:
-        df_dict[f'{selected_main_cat} Subcategories'] = subcat_summary
-    st.download_button("⬇️ Download Excel Report", data=to_excel(df_dict), file_name="dashboard_report.xlsx")
-    st.download_button("⬇️ Download PDF Report", data=export_pdf(df_dict, kpis), file_name="dashboard_report.pdf")
+            st.subheader('Running Balance Chart')
+            acct = st.selectbox('Select Account', s.index.tolist())
+            if acct:
+                adf = ledger[ledger['Account']==acct]
+                st.plotly_chart(px.line(adf, x='Date', y='Running Balance', markers=True), use_container_width=True, key=f'running_balance_{acct}')
 
+    # -------------------- Downloads --------------------------------------
+    st.subheader('Download Reports')
+    df_dict = {'Filtered Data': df_f.reset_index(drop=True)}
+    st.download_button('Download Excel', data=to_excel(df_dict), file_name='dashboard_report.xlsx')
+    st.download_button('Download PDF', data=export_pdf(df_dict, kpi), file_name='dashboard_report.pdf')
 
-if __name__ == "__main__":
+if __name__=='__main__':
     dashboard_module()

@@ -1,5 +1,5 @@
 # smart_patterns.py
-# Ultra-smart dynamic categorization with full parsing and auto-learning
+# Ultra-smart dynamic categorization with full parsing, fuzzy matching, and auto-learning
 
 import re
 import pandas as pd
@@ -64,48 +64,42 @@ def smart_dynamic_categorization(description):
     amount_str = f" ({amount}{currency})" if amount else ""
 
     # ---------------- Generic Credit / Debit Detection ----------------
-    credit_regex = [
+    credit_patterns = [
         r"\bcredit from\b", r"\bcredited\b", r"\bdeposit from\b", r"\bpayment from\b",
-        r"\btransfer from\b", r"\breceived from\b"
+        r"\btransfer from\b", r"\breceived from\b", r"\bcredit[- ]?\b"
     ]
-    debit_regex = [
-        r"\bdebit to\b", r"\bpaid to\b", r"\bwithdrawn to\b", r"\btransfer to\b", r"\bsent to\b"
+    debit_patterns = [
+        r"\bdebit to\b", r"\bpaid to\b", r"\bwithdrawn to\b", r"\btransfer to\b",
+        r"\bsent to\b", r"\bdebit[- ]?\b"
     ]
 
-    if any(re.search(pat, desc) for pat in credit_regex):
-        match = re.search(r"(?:credit from|credited by|deposit from|payment from|transfer from|received from)\s+([\w\s]+)", desc)
-        payer = match.group(1).title() if match else "Client"
-        sub_cat = f"Credit from {payer}{amount_str}"
-        return "Revenue", sub_cat, True, 95
+    for pat in credit_patterns:
+        if re.search(pat, desc):
+            match = re.search(r"(?:credit from|credited by|deposit from|payment from|transfer from|received from)\s+([\w\s]+)", desc)
+            payer = match.group(1).title() if match else "Client"
+            return "Revenue", f"Credit from {payer}{amount_str}", True, 95
 
-    if any(re.search(pat, desc) for pat in debit_regex):
-        match = re.search(r"(?:debit to|paid to|withdrawn to|transfer to|sent to)\s+([\w\s]+)", desc)
-        payee = match.group(1).title() if match else "Payee"
-        sub_cat = f"Debit to {payee}{amount_str}"
-        return "Expense", sub_cat, True, 95
+    for pat in debit_patterns:
+        if re.search(pat, desc):
+            match = re.search(r"(?:debit to|paid to|withdrawn to|transfer to|sent to)\s+([\w\s]+)", desc)
+            payee = match.group(1).title() if match else "Payee"
+            return "Expense", f"Debit to {payee}{amount_str}", True, 95
 
     # ---------------- Revenue Patterns ----------------
-    revenue_patterns = [
-        r"ach (deposit|credit)", r"paypal (deposit|payment|transfer)", r"stripe payout",
-        r"client payment", r"cash sale", r"tuition", r"student fee",
-        r"invoice (paid|payment)", r"payment (from|received|credited|sent)",
-        r"transfer (from|received|to)", r"grant received", r"rental income",
-        r"subscription income", r"commission income", r"interest income"
-    ]
-    if any(re.search(pat, desc) for pat in revenue_patterns):
-        sub_cat = "Client Payment"
-        if any(k in desc for k in ["consulting", "software dev", "freelance", "upwork", "fiverr"]):
-            sub_cat = "Consulting / Freelance"
-        elif any(k in desc for k in ["real estate", "property management"]):
-            sub_cat = "Real Estate Income"
-        elif any(k in desc for k in ["tuition", "school", "student"]):
-            sub_cat = "Education / School"
-        elif any(k in desc for k in ["subscription", "membership", "saas"]):
-            sub_cat = "Subscription / Membership"
-        elif any(k in desc for k in ["commission", "brokerage", "agent"]):
-            sub_cat = "Commission Income"
-        sub_cat += amount_str
-        return "Revenue", sub_cat, True, 95
+    revenue_keywords = {
+        "Consulting / Freelance": ["consulting", "software dev", "freelance", "upwork", "fiverr"],
+        "Real Estate Income": ["real estate", "property management"],
+        "Education / School": ["tuition", "school", "student", "college", "training"],
+        "Subscription / Membership": ["subscription", "membership", "saas"],
+        "Commission Income": ["commission", "brokerage", "agent"],
+        "Rental Income": ["rental", "rent", "property"],
+        "Finance Income": ["interest", "bank interest", "dividend"],
+        "Grants / Donations": ["grant", "donation"]
+    }
+
+    for cat, keywords in revenue_keywords.items():
+        if any(kw in desc for kw in keywords):
+            return "Revenue", f"{cat}{amount_str}", True, 95
 
     # ---------------- Expense Patterns ----------------
     expense_keywords = {
@@ -126,18 +120,13 @@ def smart_dynamic_categorization(description):
         "Freelance / Contractors": ["upwork", "fiverr", "escrow", "contractor", "freelancer"],
         "Retail / POS": ["pos", "store", "supercenter", "purchase", "retail", "square", "shopify", "woocommerce", "etsy"],
         "Web3 / Crypto": ["crypto", "bitcoin", "ethereum", "nft", "staking", "wallet"],
-        "Education / School": ["school", "tuition", "books", "student", "college", "training"],
-        "Subscription / Membership": ["netflix", "spotify", "subscription", "membership", "saas"],
-        "Fees / Service Charges": ["tcs delivery charge", "bank fee", "credit card cashback",
-                                   "paypal fee", "processing fee", "service charge", "escrow fee"],
         "Franchise / Licensing / Royalties": ["franchise fee", "royalty", "license fee", "patent fee"],
         "Customs / Duties": ["customs", "import duty", "tariff"]
     }
 
     for cat, keywords in expense_keywords.items():
         if any(kw in desc for kw in keywords):
-            sub_cat = f"{cat}{amount_str}"
-            return "Expense", sub_cat, True, 95
+            return "Expense", f"{cat}{amount_str}", True, 95
 
     # ---------------- Refunds / Chargebacks ----------------
     if any(kw in desc for kw in ["refund", "chargeback", "reversal", "rebate"]):
@@ -148,10 +137,8 @@ def smart_dynamic_categorization(description):
         return "Expense", f"Rounded Payment / Bill{amount_str}", True, 80
 
     # ---------------- Fallback ----------------
-    if any(k in desc for k in ["pay", "deposit", "transfer", "receive", "payment", "credited"]):
-        main_cat, sub_cat = "Revenue", f"Client Payment{amount_str}"
-    else:
-        main_cat, sub_cat = "Expense", f"Miscellaneous{amount_str}"
+    main_cat = "Revenue" if any(k in desc for k in ["pay", "deposit", "transfer", "receive", "payment", "credited"]) else "Expense"
+    sub_cat = f"Client Payment{amount_str}" if main_cat == "Revenue" else f"Miscellaneous{amount_str}"
 
     save_new_category(desc, main_cat, sub_cat)
     return main_cat, sub_cat, False, 50

@@ -75,23 +75,31 @@ def budget_module():
     # ---------------- Budget Input ---------------- #
     st.subheader("💰 Set / Edit Budgets per Category")
     budgeted = {}
-    for idx, value in df_filtered.groupby(['Main Category', 'Subcategory'])['Balance Change'].sum().items():
-        main_cat, sub_cat = idx
+    actual_summary = df_filtered.groupby(['Main Category', 'Subcategory'])['Balance Change'].sum().reset_index()
+
+    for idx, row in actual_summary.iterrows():
+        main_cat, sub_cat, actual = row['Main Category'], row['Subcategory'], row['Balance Change']
+        # Pre-fill budget with last period's actual
         budgeted[(main_cat, sub_cat)] = st.number_input(
             f"Budget for {main_cat} / {sub_cat}",
-            value=0.0,  # Default to 0
+            value=float(actual),
             step=0.01
         )
 
     # ---------------- Actual vs Budget ---------------- #
-    actual_summary = df_filtered.groupby(['Main Category', 'Subcategory'])['Balance Change'].sum().reset_index()
     actual_summary['Budgeted'] = actual_summary.apply(
         lambda x: budgeted.get((x['Main Category'], x['Subcategory']), 0), axis=1
     )
-    actual_summary['Variance'] = actual_summary.apply(
-        lambda x: (x['Balance Change'] - x['Budgeted']) if x['Main Category'].lower() != 'expense' else (x['Budgeted'] - x['Balance Change']),
-        axis=1
-    )
+
+    # Variance logic: favorable/unfavorable
+    def compute_variance(row):
+        if row['Main Category'].lower() == 'expense':
+            variance = row['Budgeted'] - row['Balance Change']
+        else:
+            variance = row['Balance Change'] - row['Budgeted']
+        return variance
+
+    actual_summary['Variance'] = actual_summary.apply(compute_variance, axis=1)
     actual_summary['Variance %'] = actual_summary.apply(
         lambda x: (x['Variance'] / x['Budgeted'] * 100) if x['Budgeted'] != 0 else 0, axis=1
     )
@@ -151,20 +159,25 @@ def budget_module():
     try:
         forecast_df = df_filtered.groupby(['Month', 'Main Category', 'Subcategory'])['Balance Change'].sum().reset_index()
         forecast_list = []
+
         for idx, cat_df in forecast_df.groupby(['Main Category', 'Subcategory']):
             cat_df = cat_df.sort_values('Month')
             cat_df['Forecast'] = cat_df['Balance Change'].rolling(period, min_periods=1).apply(
                 lambda x: np.average(x, weights=np.arange(1, len(x)+1)), raw=True
-            ).bfill()
+            )
             last_forecast = cat_df['Forecast'].iloc[-1] if not cat_df.empty else 0
             main_cat, sub_cat = idx
-            for i in range(forecast_months):
+            growth_rate = cat_df['Balance Change'].pct_change().fillna(0).mean() # average growth
+            for i in range(1, forecast_months+1):
+                projected = last_forecast * (1 + growth_rate)
                 forecast_list.append({
-                    'Month': f"Next Month +{i+1}",
+                    'Month': f"Next Month +{i}",
                     'Main Category': main_cat,
                     'Subcategory': sub_cat,
-                    'Forecast': last_forecast
+                    'Forecast': projected
                 })
+                last_forecast = projected
+
         forecast_display = pd.DataFrame(forecast_list)
         st.dataframe(forecast_display)
     except Exception as e:
@@ -199,3 +212,4 @@ def budget_module():
 # ---------------- Main ---------------- #
 if __name__ == "__main__":
     budget_module()
+
