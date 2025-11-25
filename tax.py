@@ -24,7 +24,7 @@ def load_data():
 
 # ---------------- PREPROCESS AMOUNTS & CURRENCY ---------------- #
 def preprocess_amounts(df):
-    df['Currency'] = df['Balance Change'].astype(str).str.extract(r'([A-Z$€£₹]+)')[0].fillna('$')
+    df['Currency'] = df['Balance Change'].astype(str).str.extract(r'([A-Z$€£₹¥]+)')[0].fillna('$')
     df['Balance Change'] = df['Balance Change'].astype(str).str.replace(r"[^\d\.-]", "", regex=True)
     df['Balance Change'] = pd.to_numeric(df['Balance Change'], errors='coerce').fillna(0.0)
     return df
@@ -199,21 +199,24 @@ def tax_module():
 
     df = preprocess_amounts(df)
 
-    # Filters
+    # ---------------- FILTERS ---------------- #
     st.sidebar.header("Filters")
     start_date = st.sidebar.date_input("Start Date", df['Date'].min())
     end_date = st.sidebar.date_input("End Date", df['Date'].max())
-    main_categories = st.sidebar.multiselect("Main Category", df['Main Category'].unique())
-    sub_categories = st.sidebar.multiselect("Subcategory", df['Subcategory'].unique())
-    currencies = st.sidebar.multiselect("Currency", df['Currency'].unique(), default=df['Currency'].unique())
+    main_categories = st.sidebar.multiselect("Main Category", options=sorted(df['Main Category'].unique()), default=sorted(df['Main Category'].unique()))
+    sub_categories = st.sidebar.multiselect("Subcategory", options=sorted(df['Subcategory'].unique()), default=sorted(df['Subcategory'].unique()))
+    
+    # --- Currency select box --- #
+    selected_currency = st.sidebar.selectbox("Select Currency", options=sorted(df['Currency'].unique()), index=0)
 
-    df_filtered = df[(df['Date']>=pd.to_datetime(start_date)) & (df['Date']<=pd.to_datetime(end_date))]
-    if main_categories:
-        df_filtered = df_filtered[df_filtered['Main Category'].isin(main_categories)]
-    if sub_categories:
-        df_filtered = df_filtered[df_filtered['Subcategory'].isin(sub_categories)]
-    if currencies:
-        df_filtered = df_filtered[df_filtered['Currency'].isin(currencies)]
+    df_filtered = df[
+        (df['Date'] >= pd.to_datetime(start_date)) &
+        (df['Date'] <= pd.to_datetime(end_date)) &
+        (df['Main Category'].isin(main_categories)) &
+        (df['Subcategory'].isin(sub_categories)) &
+        (df['Currency'] == selected_currency)
+    ]
+
     if df_filtered.empty:
         st.info("No transactions found for selected filters.")
         return
@@ -229,38 +232,38 @@ def tax_module():
     # Apply VAT & Journals
     df_taxed = apply_vat_and_journals(df_filtered, vat_rates, income_tax_rate)
 
-    # KPIs: show default currency (most frequent)
-    default_currency = df_filtered['Currency'].mode()[0] if not df_filtered.empty else '$'
+    # KPIs
     total_vat = df_taxed['VAT Amount'].sum()
     total_net = df_taxed['Net Amount'].sum()
     total_gross = df_taxed['Balance Change'].sum()
     total_rev, total_exp, profit, total_income_tax = compute_profit_and_income_tax(df_taxed, income_tax_rate)
 
+    # Display KPIs
     st.subheader("VAT & Profit Summary")
-    colA,colB,colC,colD = st.columns(4)
-    colA.metric("Total Gross", f"{default_currency}{total_gross:,.2f}")
-    colB.metric("Total Net", f"{default_currency}{total_net:,.2f}")
-    colC.metric("Total VAT", f"{default_currency}{total_vat:,.2f}")
-    colD.metric("Profit", f"{default_currency}{profit:,.2f}")
+    colA, colB, colC, colD = st.columns(4)
+    colA.metric("Total Gross", f"{selected_currency}{total_gross:,.2f}")
+    colB.metric("Total Net", f"{selected_currency}{total_net:,.2f}")
+    colC.metric("Total VAT", f"{selected_currency}{total_vat:,.2f}")
+    colD.metric("Profit", f"{selected_currency}{profit:,.2f}")
 
-    # Summary Table (multi-currency preserved)
+    # Summary Table
     st.subheader("Summary by Main Category")
-    summary_df = df_taxed.groupby(["Main Category","Currency"])[["Net Amount","VAT Amount","Income Tax per Row"]].sum().reset_index()
+    summary_df = df_taxed.groupby(["Main Category"])[["Net Amount","VAT Amount","Income Tax per Row"]].sum().reset_index()
+    summary_df['Currency'] = selected_currency
     st.dataframe(summary_df)
 
     # Plot
     fig = px.bar(summary_df, x="Main Category", y=["Net Amount","VAT Amount","Income Tax per Row"],
-                 color="Currency", text_auto=True, title="Category Summary",
-                 barmode="group", height=450)
+                 color='Currency', text_auto=True, title="Category Summary", barmode="group", height=450)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Download PDF
+    # PDF download
     if st.button("⬇️ Download PDF Report"):
         pdf = ERPReportPDF()
         pdf.add_page()
-        pdf.add_kpis(total_gross,total_net,total_vat,total_rev,total_exp,profit,total_income_tax, currency=default_currency)
+        pdf.add_kpis(total_gross,total_net,total_vat,total_rev,total_exp,profit,total_income_tax,currency=selected_currency)
         pdf.add_summary_table(summary_df)
-        pdf.add_tax_table(total_rev,total_exp,profit,total_income_tax, currency=default_currency)
+        pdf.add_tax_table(total_rev,total_exp,profit,total_income_tax,currency=selected_currency)
         pdf.add_journals_appendix(df_taxed)
 
         # Add chart as image
@@ -272,6 +275,7 @@ def tax_module():
 
         pdf_bytes = pdf.output(dest='S').encode('latin1')
         st.download_button("Download PDF", data=pdf_bytes, file_name="ERP_Full_Report.pdf", mime="application/pdf")
+
 
 # ---------------- MAIN ---------------- #
 if __name__ == "__main__":
