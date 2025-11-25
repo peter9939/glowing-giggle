@@ -1,8 +1,6 @@
 # dashboard_module_full_color.py
 import logging
 from io import BytesIO
-import logging
-from io import BytesIO
 from typing import Dict
 
 import pandas as pd
@@ -25,16 +23,12 @@ CATEGORY_DC_MAP = {
     'equity': ('Credit', 'Debit')
 }
 CHART_COLORS = px.colors.qualitative.Safe
-
-# Currency symbol map
 CURRENCY_MAP = {'$': 'USD', '€': 'EUR', '£': 'GBP', '₹': 'INR', '¥': 'JPY'}
 
 # ---------------- Utilities ----------------
 def preprocess_amounts(df):
     df['Currency'] = df['Balance Change'].astype(str).str.extract(r'([A-Z$€£₹¥]+)')[0].fillna('$')
-    # Replace symbols with letters
     df['Currency'] = df['Currency'].map(CURRENCY_MAP).fillna('USD')
-    # Remove non-numeric characters
     df['Balance Change'] = df['Balance Change'].astype(str).str.replace(r"[^\d\.-]", "", regex=True)
     df['Balance Change'] = pd.to_numeric(df['Balance Change'], errors='coerce').fillna(0.0)
     return df
@@ -52,7 +46,6 @@ def ensure_columns(df):
                 df[c] = False
             else:
                 df[c] = "Unknown"
-
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce').fillna(pd.Timestamp.today())
     df['Balance Change'] = pd.to_numeric(df['Balance Change'], errors='coerce').fillna(0.0)
     df['Main Category'] = df['Main Category'].astype(str)
@@ -108,7 +101,6 @@ def export_pdf(df_dict: Dict[str, pd.DataFrame], kpis: Dict[str, float], currenc
     pdf.set_font('Arial', 'B', 16)
     pdf.cell(0, 10, 'Accounting Dashboard Report', ln=True, align='C')
     pdf.ln(4)
-
     pdf.set_font('Arial', 'B', 12)
     pdf.cell(0, 8, 'Key Performance Indicators', ln=True)
     pdf.set_font('Arial', '', 10)
@@ -117,7 +109,6 @@ def export_pdf(df_dict: Dict[str, pd.DataFrame], kpis: Dict[str, float], currenc
             pdf.cell(0, 6, f"{k}: {currency}{v:,.2f}", ln=True)
         else:
             pdf.cell(0, 6, f"{k}: {v}", ln=True)
-
     pdf.ln(4)
     for name, df in df_dict.items():
         pdf.set_font('Arial', 'B', 12)
@@ -240,19 +231,24 @@ def dashboard_module():
     with tabs[0]:
         st.subheader('Trial Balance')
         tb = df_f.copy()
-        def tb_dc(r):
-            mc = str(r['Main Category']).lower()
-            amt = abs(float(r['Balance Change'] or 0))
-            if mc in ['expense','asset']:
+        if set(['Debit','Credit']).issubset(tb.columns):
+            # Use existing Debit/Credit if present
+            st.dataframe(tb[['Main Category','Subcategory','Debit','Credit']])
+            ttl_d, ttl_c = tb['Debit'].sum(), tb['Credit'].sum()
+        else:
+            def tb_dc(r):
+                mc = str(r['Main Category']).lower()
+                amt = abs(float(r['Balance Change'] or 0))
+                if mc in ['expense','asset']:
+                    return pd.Series([amt,0.0])
+                if mc in ['revenue','liability','equity']:
+                    return pd.Series([0.0,amt])
                 return pd.Series([amt,0.0])
-            if mc in ['revenue','liability','equity']:
-                return pd.Series([0.0,amt])
-            return pd.Series([amt,0.0])
-        tb[['Debit','Credit']] = tb.apply(tb_dc, axis=1)
-        st.dataframe(tb[['Main Category','Subcategory','Debit','Credit']])
+            tb[['Debit','Credit']] = tb.apply(tb_dc, axis=1)
+            st.dataframe(tb[['Main Category','Subcategory','Debit','Credit']])
+            ttl_d, ttl_c = tb['Debit'].sum(), tb['Credit'].sum()
         st.plotly_chart(px.bar(tb, x='Main Category', y='Balance Change', color='Main Category', 
                                color_discrete_sequence=CHART_COLORS), key='trial_balance_bar')
-        ttl_d, ttl_c = tb['Debit'].sum(), tb['Credit'].sum()
         if abs(ttl_d-ttl_c)<0.01:
             st.success(f"Balanced ✓ Debit={ttl_d:,.2f} Credit={ttl_c:,.2f}")
         else:
@@ -331,20 +327,25 @@ def dashboard_module():
     # --- Journal & Ledger ---
     with tabs[6]:
         st.subheader('Journal Entries')
-        jdf=generate_journal_entries(df_f)
+        if set(['Debit Account','Debit','Credit Account','Credit']).issubset(df_f.columns):
+            jdf = df_f[['Date','Description','Debit Account','Debit','Credit Account','Credit']].copy()
+        else:
+            jdf = generate_journal_entries(df_f)
         st.dataframe(jdf)
+
         st.subheader('Ledger')
-        ledger=build_ledger_from_journal(jdf)
+        ledger = build_ledger_from_journal(jdf)
         st.dataframe(ledger)
         if not ledger.empty:
             st.subheader('Ledger Summary')
-            s=ledger.groupby('Account')[['Debit','Credit']].sum()
-            s['Closing Balance']=s['Debit']-s['Credit']
+            s = ledger.groupby('Account')[['Debit','Credit']].sum()
+            s['Closing Balance'] = s['Debit']-s['Credit']
             st.dataframe(s.reset_index())
+
             st.subheader('Running Balance Chart')
-            acct=st.selectbox('Select Account', s.index.tolist())
+            acct = st.selectbox('Select Account', s.index.tolist())
             if acct:
-                adf=ledger[ledger['Account']==acct]
+                adf = ledger[ledger['Account'] == acct]
                 st.plotly_chart(px.line(adf,x='Date',y='Running Balance',markers=True,
                                         color_discrete_sequence=CHART_COLORS), key=f'running_balance_{acct}')
 
@@ -353,7 +354,6 @@ def dashboard_module():
     df_dict={'Filtered Data': df_f.reset_index(drop=True)}
     st.download_button('Download Excel', data=to_excel(df_dict, selected_currency), file_name='dashboard_report.xlsx')
     st.download_button('Download PDF', data=export_pdf(df_dict,kpi,selected_currency), file_name='dashboard_report.pdf')
-
 
 if __name__=='__main__':
     dashboard_module()
