@@ -1,6 +1,8 @@
 # dashboard_module_full_color.py
 import logging
 from io import BytesIO
+import logging
+from io import BytesIO
 from typing import Dict
 
 import pandas as pd
@@ -8,11 +10,11 @@ import plotly.express as px
 import streamlit as st
 from fpdf import FPDF
 
-# Logging
+# ---------------- Logging ----------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Constants
+# ---------------- Constants ----------------
 REQUIRED_COLS = ['Date', 'Main Category', 'Subcategory', 'Balance Change', 'Description', 'Auto-Matched']
 CASH_ACCOUNT = "Cash / Bank"
 CATEGORY_DC_MAP = {
@@ -22,11 +24,17 @@ CATEGORY_DC_MAP = {
     'liability': ('Credit', 'Debit'),
     'equity': ('Credit', 'Debit')
 }
-CHART_COLORS = px.colors.qualitative.Safe  # colorful palette for charts
+CHART_COLORS = px.colors.qualitative.Safe
+
+# Currency symbol map
+CURRENCY_MAP = {'$': 'USD', '€': 'EUR', '£': 'GBP', '₹': 'INR', '¥': 'JPY'}
 
 # ---------------- Utilities ----------------
 def preprocess_amounts(df):
     df['Currency'] = df['Balance Change'].astype(str).str.extract(r'([A-Z$€£₹¥]+)')[0].fillna('$')
+    # Replace symbols with letters
+    df['Currency'] = df['Currency'].map(CURRENCY_MAP).fillna('USD')
+    # Remove non-numeric characters
     df['Balance Change'] = df['Balance Change'].astype(str).str.replace(r"[^\d\.-]", "", regex=True)
     df['Balance Change'] = pd.to_numeric(df['Balance Change'], errors='coerce').fillna(0.0)
     return df
