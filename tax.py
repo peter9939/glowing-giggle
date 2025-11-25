@@ -30,7 +30,12 @@ def preprocess_amounts(df):
     return df
 
 # ---------------- VAT / NET CALC ---------------- #
-def extract_vat_from_gross(gross, rate):
+def extract_vat_from_gross(gross, rate, category):
+    """
+    VAT applies only to Revenue (sales) and Expense (purchases)
+    """
+    if category not in ["Revenue", "Expense"]:
+        return gross, 0.0  # No VAT for other categories
     vat = gross * (rate / (1 + rate))
     net = gross - vat
     return net, vat
@@ -45,41 +50,73 @@ def build_real_journal_entry(row, income_tax_rate=0.0):
     currency = row.get('Currency', '$')
 
     if cat == "Revenue":
-        entries.append({"Debit": f"Accounts Receivable / Cash ({currency})","Credit": f"Revenue ({currency})","Amount": net})
+        # Revenue entry
+        entries.append({"Debit": f"Accounts Receivable / Cash ({currency})",
+                        "Credit": f"Revenue ({currency})", "Amount": net})
         if vat > 0:
-            entries.append({"Debit": f"Accounts Receivable / Cash ({currency})","Credit": f"VAT Payable ({currency})","Amount": vat})
+            entries.append({"Debit": f"Accounts Receivable / Cash ({currency})",
+                            "Credit": f"VAT Payable ({currency})", "Amount": vat})
         if income_tax_rate > 0:
             tax_amount = net * income_tax_rate
-            entries.append({"Debit": f"Income Tax Expense ({currency})","Credit": f"Income Tax Payable ({currency})","Amount": tax_amount})
+            entries.append({"Debit": f"Income Tax Expense ({currency})",
+                            "Credit": f"Income Tax Payable ({currency})", "Amount": tax_amount})
+
     elif cat == "Expense":
-        entries.append({"Debit": f"Expense ({currency})","Credit": f"Accounts Payable / Cash ({currency})","Amount": net})
+        # Expense entry
+        entries.append({"Debit": f"Expense ({currency})",
+                        "Credit": f"Accounts Payable / Cash ({currency})", "Amount": net})
         if vat > 0:
-            entries.append({"Debit": f"VAT Receivable ({currency})","Credit": f"Accounts Payable / Cash ({currency})","Amount": vat})
-    else:
+            entries.append({"Debit": f"VAT Receivable ({currency})",
+                            "Credit": f"Accounts Payable / Cash ({currency})", "Amount": vat})
+
+    elif cat in ["Asset", "Liability", "Equity"]:
+        # No VAT applied
         if gross > 0:
-            entries.append({"Debit": f"Cash/Bank ({currency})","Credit": f"Other ({currency})","Amount": gross})
+            entries.append({"Debit": f"Cash/Bank ({currency})",
+                            "Credit": f"{cat} ({currency})", "Amount": gross})
         else:
-            entries.append({"Debit": f"Other ({currency})","Credit": f"Cash/Bank ({currency})","Amount": abs(gross)})
+            entries.append({"Debit": f"{cat} ({currency})",
+                            "Credit": f"Cash/Bank ({currency})", "Amount": abs(gross)})
+
+    else:
+        # Other categories
+        if gross > 0:
+            entries.append({"Debit": f"Cash/Bank ({currency})",
+                            "Credit": f"Other ({currency})", "Amount": gross})
+        else:
+            entries.append({"Debit": f"Other ({currency})",
+                            "Credit": f"Cash/Bank ({currency})", "Amount": abs(gross)})
+
     return entries
 
+# ---------------- APPLY VAT & JOURNALS ---------------- #
 def apply_vat_and_journals(df, vat_rates, income_tax_rate=0.0):
     net_list, vat_list, journal_list, row_tax_list = [], [], [], []
+
     for _, row in df.iterrows():
-        rate = vat_rates.get(row['Main Category'], 0)
+        cat = row['Main Category']
+        rate = vat_rates.get(cat, 0)
         gross = row['Balance Change']
-        net, vat = extract_vat_from_gross(gross, rate)
+
+        net, vat = extract_vat_from_gross(gross, rate, cat)
         net_list.append(net)
         vat_list.append(vat)
+
         row2 = row.copy()
         row2['Net Amount'] = net
         row2['VAT Amount'] = vat
+
         journals = build_real_journal_entry(row2, income_tax_rate)
         journal_list.append(journals)
-        row_tax_list.append(net * income_tax_rate if row['Main Category']=="Revenue" else 0)
+
+        # Income tax per row only for revenue
+        row_tax_list.append(net * income_tax_rate if cat == "Revenue" else 0)
+
     df['Net Amount'] = net_list
     df['VAT Amount'] = vat_list
     df['Income Tax per Row'] = row_tax_list
     df['Journal Entries'] = journal_list
+
     return df
 
 # ---------------- PROFIT & TAX ---------------- #
@@ -87,7 +124,7 @@ def compute_profit_and_income_tax(df, tax_rate):
     total_rev = df[df['Main Category']=="Revenue"]['Net Amount'].sum()
     total_exp = df[df['Main Category']=="Expense"]['Net Amount'].sum()
     profit = total_rev - total_exp
-    tax = profit * tax_rate if profit>0 else 0
+    tax = profit * tax_rate if profit > 0 else 0
     return total_rev, total_exp, profit, tax
 
 # ---------------- PDF REPORT ---------------- #
@@ -275,7 +312,6 @@ def tax_module():
 
         pdf_bytes = pdf.output(dest='S').encode('latin1')
         st.download_button("Download PDF", data=pdf_bytes, file_name="ERP_Full_Report.pdf", mime="application/pdf")
-
 
 # ---------------- MAIN ---------------- #
 if __name__ == "__main__":
