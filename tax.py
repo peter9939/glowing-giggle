@@ -4,7 +4,6 @@ from fpdf import FPDF
 import plotly.express as px
 import plotly.io as pio
 import io
-import re
 
 # ---------------- LOAD DATA ---------------- #
 def load_data():
@@ -20,6 +19,7 @@ def load_data():
     for col in needed:
         if col not in df.columns:
             df[col] = "Unknown"
+    df['Balance Change'] = pd.to_numeric(df['Balance Change'], errors='coerce').fillna(0.0)
     return df
 
 # ---------------- PREPROCESS AMOUNTS & CURRENCY ---------------- #
@@ -33,10 +33,12 @@ def preprocess_amounts(df):
 def extract_vat_from_gross(gross, rate, category):
     """
     VAT applies only to Revenue (sales) and Expense (purchases)
+    Handles negative values properly.
     """
     if category not in ["Revenue", "Expense"]:
-        return gross, 0.0  # No VAT for other categories
-    vat = gross * (rate / (1 + rate))
+        return gross, 0.0
+    sign = 1 if gross >= 0 else -1
+    vat = abs(gross) * (rate / (1 + rate)) * sign
     net = gross - vat
     return net, vat
 
@@ -49,40 +51,38 @@ def build_real_journal_entry(row, income_tax_rate=0.0):
     cat = row['Main Category']
     currency = row.get('Currency', '$')
 
+    sign = 1 if gross >= 0 else -1
+
     if cat == "Revenue":
-        # Revenue entry
         entries.append({"Debit": f"Accounts Receivable / Cash ({currency})",
-                        "Credit": f"Revenue ({currency})", "Amount": net})
-        if vat > 0:
+                        "Credit": f"Revenue ({currency})", "Amount": abs(net)})
+        if vat != 0:
             entries.append({"Debit": f"Accounts Receivable / Cash ({currency})",
-                            "Credit": f"VAT Payable ({currency})", "Amount": vat})
+                            "Credit": f"VAT Payable ({currency})", "Amount": abs(vat)})
         if income_tax_rate > 0:
-            tax_amount = net * income_tax_rate
+            tax_amount = abs(net) * income_tax_rate
             entries.append({"Debit": f"Income Tax Expense ({currency})",
                             "Credit": f"Income Tax Payable ({currency})", "Amount": tax_amount})
 
     elif cat == "Expense":
-        # Expense entry
         entries.append({"Debit": f"Expense ({currency})",
-                        "Credit": f"Accounts Payable / Cash ({currency})", "Amount": net})
-        if vat > 0:
+                        "Credit": f"Accounts Payable / Cash ({currency})", "Amount": abs(net)})
+        if vat != 0:
             entries.append({"Debit": f"VAT Receivable ({currency})",
-                            "Credit": f"Accounts Payable / Cash ({currency})", "Amount": vat})
+                            "Credit": f"Accounts Payable / Cash ({currency})", "Amount": abs(vat)})
 
     elif cat in ["Asset", "Liability", "Equity"]:
-        # No VAT applied
-        if gross > 0:
+        if sign > 0:
             entries.append({"Debit": f"Cash/Bank ({currency})",
-                            "Credit": f"{cat} ({currency})", "Amount": gross})
+                            "Credit": f"{cat} ({currency})", "Amount": abs(gross)})
         else:
             entries.append({"Debit": f"{cat} ({currency})",
                             "Credit": f"Cash/Bank ({currency})", "Amount": abs(gross)})
 
     else:
-        # Other categories
-        if gross > 0:
+        if sign > 0:
             entries.append({"Debit": f"Cash/Bank ({currency})",
-                            "Credit": f"Other ({currency})", "Amount": gross})
+                            "Credit": f"Other ({currency})", "Amount": abs(gross)})
         else:
             entries.append({"Debit": f"Other ({currency})",
                             "Credit": f"Cash/Bank ({currency})", "Amount": abs(gross)})
@@ -109,8 +109,7 @@ def apply_vat_and_journals(df, vat_rates, income_tax_rate=0.0):
         journals = build_real_journal_entry(row2, income_tax_rate)
         journal_list.append(journals)
 
-        # Income tax per row only for revenue
-        row_tax_list.append(net * income_tax_rate if cat == "Revenue" else 0)
+        row_tax_list.append(abs(net) * income_tax_rate if cat == "Revenue" else 0)
 
     df['Net Amount'] = net_list
     df['VAT Amount'] = vat_list
@@ -152,7 +151,8 @@ class ERPReportPDF(FPDF):
             ("Income Tax", total_income_tax)
         ]
         for name, val in metrics:
-            self.cell(0, 7, f"{name}: {currency}{val:,.2f}", ln=True)
+            display_val = f"{currency}{abs(val):,.2f}" if val>=0 else f"-{currency}{abs(val):,.2f}"
+            self.cell(0, 7, f"{name}: {display_val}", ln=True)
         self.ln(5)
 
     def add_summary_table(self, df_summary):
@@ -167,6 +167,9 @@ class ERPReportPDF(FPDF):
         self.ln()
         for _, row in df_summary.iterrows():
             currency = row.get('Currency', '$')
+            for col in ['Net Amount','VAT Amount','Income Tax per Row']:
+                if row[col]<0:
+                    row[col] = -abs(row[col])
             self.cell(col_widths[0], 6, str(row['Main Category']), border=1)
             self.cell(col_widths[1], 6, f"{currency}{row['Net Amount']:,.2f}", border=1)
             self.cell(col_widths[2], 6, f"{currency}{row['VAT Amount']:,.2f}", border=1)
@@ -190,8 +193,9 @@ class ERPReportPDF(FPDF):
             ("Income Tax", total_income_tax)
         ]
         for name, val in rows:
+            display_val = f"{currency}{abs(val):,.2f}" if val>=0 else f"-{currency}{abs(val):,.2f}"
             self.cell(col_widths[0], 6, name, border=1)
-            self.cell(col_widths[1], 6, f"{currency}{val:,.2f}", border=1)
+            self.cell(col_widths[1], 6, display_val, border=1)
             self.ln()
         self.ln(5)
 
@@ -243,7 +247,6 @@ def tax_module():
     main_categories = st.sidebar.multiselect("Main Category", options=sorted(df['Main Category'].unique()), default=sorted(df['Main Category'].unique()))
     sub_categories = st.sidebar.multiselect("Subcategory", options=sorted(df['Subcategory'].unique()), default=sorted(df['Subcategory'].unique()))
     
-    # --- Currency select box --- #
     selected_currency = st.sidebar.selectbox("Select Currency", options=sorted(df['Currency'].unique()), index=0)
 
     df_filtered = df[
