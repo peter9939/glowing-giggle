@@ -1,5 +1,4 @@
 Transaction Description,Main Category,Subcategory
-Salary Payment,Expense,Salaries & Wages
 Office Chairs Purchase,Expense,Supplies
 Client Payment Invoice #104,Revenue,Service
 Snacks for Office,Expense,Office Supplies
@@ -10,10 +9,8 @@ Printer Ink Purchase,Expense,Office Supplies
 Marketing Campaign,Expense,Marketing
 Product sale,Revenue,Sales Income
 Office Rent Payment,Expense,Rent
-Service Revenue,Revenue,Service Income
 Customer Payment,Revenue,Sales Income
 Electricity Bill Payment,Expense,Utilities
-Equipment Purchase,Uncategorized,Uncategorized
 Loan from Bank,Liability,Loan
 Owner Investment,Equity,Owner's Equity
 Consulting Revenue,Revenue,Service Income
@@ -77,7 +74,6 @@ restaurant meeting,Expense,Miscellaneous
 consulting income,Expense,Miscellaneous
 transport charges,Expense,Miscellaneous
 credit card reward,Expense,Miscellaneous
-Office Supplies Purchase,Expense,Office / Supplies / Equipment
 Client Payment,Revenue,Client Payment
 Coffee Purchase,Expense,Food / Beverage
 Website Hosting,Expense,Miscellaneous
@@ -99,7 +95,6 @@ Office Furniture,Expense,Miscellaneous
 Consulting Fee Paid,Expense,Miscellaneous
 Lunch Expense,Expense,Miscellaneous
 Client Payment,Revenue,Client Payment
-Office Supplies Purchase,Expense,Office / Supplies / Equipment
 Travel Expense,Expense,Miscellaneous
 Client Payment,Revenue,Client Payment
 Electricity Bill,Expense,Utilities / Rent
@@ -114,7 +109,6 @@ Client Payment,Revenue,Client Payment
 Lunch Expense,Expense,Miscellaneous
 Consulting Fee Paid,Expense,Miscellaneous
 Client Payment,Revenue,Client Payment
-Office Supplies Purchase,Expense,Office / Supplies / Equipment
 Travel Expense,Expense,Miscellaneous
 Client Payment,Revenue,Client Payment
 Office Cleaning,Expense,Utilities / Rent
@@ -123,7 +117,6 @@ Client Payment,Revenue,Client Payment
 Travel Expense,Expense,Miscellaneous
 Office Furniture,Expense,Miscellaneous
 Lunch Expense,Expense,Miscellaneous
-Office Supplies Purchase,Expense,Office / Supplies / Equipment
 Travel Expense,Expense,Miscellaneous
 Client Payment,Revenue,Client Payment
 Electricity Bill,Expense,Utilities / Rent
@@ -162,3 +155,28 @@ employee bonus,Expense,Miscellaneous
 pso fuel,Expense,Miscellaneous
 EQUIPMENT REPAIR LN985,Expense,Equipment / Repairs
 SUPPLIES WORLD 3321,Expense,Office Supplies / Materials
+interest income,Expense,Miscellaneous
+Office Supplies Purchase,Expense,Office / Supplies / Equipment
+Client Payment - INV1001,Revenue,Sales Income
+Utility Bill Payment,Expense,General Expense
+Received Payment - INV1002,Revenue,Sales Income
+Salary Payment,Expense,Salaries & Wages
+Client Refund - INV1003,Expense,Refund / Chargeback
+Equipment Purchase,Expense,Equipment Purchase
+Interest Income,Revenue,Interest Income
+Loan Repayment,Revenue,Client Payment
+Service Revenue,Revenue,Service Income
+,,
+cash sale dep 112,Expense,Miscellaneous
+BANK TRANSFER CLIENT 2202,Revenue,Client Payments
+| ---------- | --------------------------------- | -------------- | ------------- | ----------- | -------- |,Expense,Miscellaneous
+| 2025-11-01 | product sale - website order      | 1200           | revenue       | sales       | $        |,Expense,Miscellaneous
+| 2025-11-02 | office rent payment               | -800           | expense       | rent        | $        |,Expense,Miscellaneous
+| 2025-11-03 | laptop purchase                   | -1500          | expense       | equipment   | $        |,Expense,Miscellaneous
+| 2025-11-09 | marketing ads                     | -300           | expense       | marketing   | $        |,Expense,Miscellaneous
+| 2025-11-13 | travel expenses                   | -400           | expense       | travel      | $        |,Expense,Miscellaneous
+| 2025-11-14 | office supplies                   | -150           | expense       | supplies    | $        |,Expense,Miscellaneous
+| 2025-11-15 | product sale - wholesale order    | 3000           | revenue       | sales       | $        |,Expense,Miscellaneous
+| 2025-11-16 | advertising campaign              | -600           | expense       | marketing   | €        |,Expense,Miscellaneous
+| 2025-11-17 | rent received                     | 1000           | revenue       | rent        | $        |,Revenue,Client Payment
+| 2025-11-21 | product sale - online marketplace | 800            | revenue       | sales       | ₹        |,Expense,Miscellaneous

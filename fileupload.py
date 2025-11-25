@@ -231,8 +231,13 @@ def file_upload_module():
     selected_sub = st.selectbox("Filter by Subcategory", sub_categories)
   
     filtered_df = raw_df.copy()
+   
     if show_uncategorized:
-        filtered_df = filtered_df[filtered_df['Auto-Matched'] == False]
+         filtered_df = filtered_df[
+        (filtered_df['Main Category'] == "Uncategorized") |
+        (filtered_df['Subcategory'] == "Uncategorized")
+    ]
+
     if selected_main != "All":
         filtered_df = filtered_df[filtered_df['Main Category'] == selected_main]
     if selected_sub != "All":
