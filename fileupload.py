@@ -20,11 +20,13 @@ CREDIT_ALIASES = {k for k, v in NORMALIZED_COLUMN_MAP.items() if v == 'Credit'}
 DESCRIPTION_ALIASES = {k for k, v in NORMALIZED_COLUMN_MAP.items() if v == 'Description'}
 
 # Add some common fallback aliases
-AMOUNT_ALIASES.update({'amount','amt','value','transaction_value','payment_amount',
-                       'paid','received','balance','closing_balance','opening_balance',
-                       'total','net_amount','gross_amount','subtotal','grand_total'})
-DEBIT_ALIASES.update({'debit','dr','withdrawal','debits'})
-CREDIT_ALIASES.update({'credit','cr','deposit','credits'})
+AMOUNT_ALIASES.update({
+    'amount','amt','value','transaction_value','payment_amount',
+    'paid','received','balance','closing_balance','opening_balance',
+    'total','net_amount','gross_amount','subtotal','grand_total'
+})
+DEBIT_ALIASES.update({'debit','dr','withdrawal','debits','spend'})
+CREDIT_ALIASES.update({'credit','cr','deposit','credits','received'})
 DESCRIPTION_ALIASES.update({'desc','description','details','memo','narration','particulars'})
 
 # ---------------- Load or Create Categorization CSV ---------------- #
@@ -97,8 +99,10 @@ def categorize_flexible(description):
         row = categories_df[match].iloc[0]
         return row['Main Category'], row['Subcategory'], True, 100
 
-    user_dict = {str(row['Transaction Description']).lower(): (row['Main Category'], row['Subcategory'])
-                 for _, row in categories_df.iterrows()}
+    user_dict = {
+        str(row['Transaction Description']).lower(): (row['Main Category'], row['Subcategory'])
+        for _, row in categories_df.iterrows()
+    }
     main_cat, sub_cat, matched, score = fuzzy_match_category(desc, user_dict)
     if matched:
         return main_cat, sub_cat, True, score
@@ -125,8 +129,6 @@ def assign_dc(main_category):
         return "Credit"
     else:
         return "Unknown"
-
-
 
 # ---------------- File Upload Module ---------------- #
 def file_upload_module():
@@ -216,61 +218,89 @@ def file_upload_module():
     raw_df['Auto-Matched']  = results.apply(lambda r: r[2]).reset_index(drop=True)
     raw_df['Confidence']    = results.apply(lambda r: r[3]).reset_index(drop=True)
     raw_df['Debit/Credit']  = raw_df['Main Category'].apply(assign_dc)
-  
 
     st.session_state['processed_df'] = raw_df.copy()
 
     # ---------------- Filter / Search / Metrics / Downloads ---------------- #
-    # Keep all your existing filter/search, metrics, and download code unchanged
-
     st.subheader("🔍 Filter Transactions")
     show_uncategorized = st.checkbox("Show only Uncategorized", value=False)
     main_categories = ["All"] + sorted(raw_df['Main Category'].dropna().unique().tolist())
     selected_main = st.selectbox("Filter by Main Category", main_categories)
     sub_categories = ["All"] + sorted(raw_df['Subcategory'].dropna().unique().tolist())
     selected_sub = st.selectbox("Filter by Subcategory", sub_categories)
-  
+
     filtered_df = raw_df.copy()
-   
+
     if show_uncategorized:
-         filtered_df = filtered_df[
-        (filtered_df['Main Category'] == "Uncategorized") |
-        (filtered_df['Subcategory'] == "Uncategorized")
-    ]
+        filtered_df = filtered_df[
+            (filtered_df['Main Category'] == "Uncategorized") |
+            (filtered_df['Subcategory'] == "Uncategorized")
+        ]
 
     if selected_main != "All":
         filtered_df = filtered_df[filtered_df['Main Category'] == selected_main]
     if selected_sub != "All":
         filtered_df = filtered_df[filtered_df['Subcategory'] == selected_sub]
-    
+
     st.subheader("🧾 Categorized Transactions")
     edited_df = st.data_editor(filtered_df, num_rows="dynamic")
 
-    
-
-    # Save edited categories
+    # ---------- Save Edited Categories ----------
     if st.button("💾 Save Edited Categories"):
-        changes = edited_df[['Description','Main Category','Subcategory']].copy()
-        changes.rename(columns={'Description':'Transaction Description'}, inplace=True)
-        existing = pd.read_csv(CATEGORY_FILE) if os.path.exists(CATEGORY_FILE) else pd.DataFrame(columns=['Transaction Description','Main Category','Subcategory'])
-        for idx, row in changes.iterrows():
-            existing = existing[existing['Transaction Description'] != row['Transaction Description']]
-        updated = pd.concat([existing, changes], ignore_index=True)
-        updated.to_csv(CATEGORY_FILE, index=False)
-        global categories_df
-        categories_df = load_categories()
-        st.success("✅ Changes saved!")
-        st.session_state['processed_df'] = raw_df.copy()
+        try:
+            # Extract the changes
+            changes = edited_df[['Description', 'Main Category', 'Subcategory']].copy()
+            changes.rename(columns={'Description': 'Transaction Description'}, inplace=True)
 
-    # Downloads
-    st.download_button("⬇️ Download CSV", data=edited_df.to_csv(index=False).encode('utf-8'), file_name="processed.csv")
-    excel_output = BytesIO()
-    with pd.ExcelWriter(excel_output, engine="xlsxwriter") as writer:
-        edited_df.to_excel(writer,index=False)
-    excel_output.seek(0)
-    st.download_button("⬇️ Download Excel", data=excel_output, file_name="processed.xlsx")
+            # Load existing categories
+            if os.path.exists(CATEGORY_FILE):
+                existing = pd.read_csv(CATEGORY_FILE)
+            else:
+                existing = pd.DataFrame(columns=['Transaction Description', 'Main Category', 'Subcategory'])
 
-    # Clear session
+            # Apply updates
+            for idx, row in changes.iterrows():
+                description = str(row['Transaction Description']).strip()
+                main_category = row['Main Category']
+                subcategory = row['Subcategory']
+
+                # Case-insensitive update
+                mask = existing['Transaction Description'].str.lower() == description.lower()
+                if mask.any():
+                    existing.loc[mask, ['Main Category', 'Subcategory']] = [main_category, subcategory]
+                else:
+                    # If description not found in existing → append it
+                    existing.loc[len(existing)] = [description, main_category, subcategory]
+
+            # Save the updated categories
+            existing.to_csv(CATEGORY_FILE, index=False)
+
+            # Reload categories into memory
+            global categories_df
+            categories_df = load_categories()
+
+            st.success("✅ Changes saved! All matching descriptions updated.")
+            st.session_state['processed_df'] = raw_df.copy()
+        except Exception as e:
+            st.error(f"Failed to save changes: {e}")
+
+    # ---------- Downloads ----------
+    # Guard: ensure edited_df exists and has content before offering downloads
+    try:
+        if edited_df is not None and not edited_df.empty:
+            csv_data = edited_df.to_csv(index=False).encode('utf-8')
+            st.download_button("⬇️ Download CSV", data=csv_data, file_name="processed.csv")
+            excel_output = BytesIO()
+            with pd.ExcelWriter(excel_output, engine="xlsxwriter") as writer:
+                edited_df.to_excel(writer, index=False)
+            excel_output.seek(0)
+            st.download_button("⬇️ Download Excel", data=excel_output, file_name="processed.xlsx")
+        else:
+            st.info("No rows to download.")
+    except Exception as e:
+        st.error(f"Download failed: {e}")
+
+    # ---------- Clear session ----------
     if st.button("🧹 Clear Session"):
         if 'processed_df' in st.session_state:
             del st.session_state['processed_df']
@@ -281,5 +311,5 @@ def file_upload_module():
 def get_processed_df():
     return st.session_state.get('processed_df', pd.DataFrame())
 
-if __name__=="__main__":
+if __name__ == "__main__":
     file_upload_module()
