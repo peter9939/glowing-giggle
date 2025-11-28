@@ -217,12 +217,34 @@ def budget_module():
     cumulative = df_filtered.groupby(['Month', 'Main Category', 'Subcategory'])['Balance Change'].sum().reset_index()
     cumulative['Cumulative'] = cumulative.groupby(['Main Category', 'Subcategory'])['Balance Change'].cumsum()
 
-    fig_cum = px.line(cumulative, x='Month', y='Cumulative', color='Subcategory',
-                      line_dash='Main Category', markers=True, title='Cumulative Spending')
+    fig_cum = px.line(
+    cumulative,
+    x='Month',
+    y='Cumulative',
+    color='Subcategory',
+    line_dash='Main Category',
+    markers=True,
+    title='Cumulative Spending',
+    color_discrete_sequence=px.colors.qualitative.Set2     # 🌈 colorful palette
+)
+
     st.plotly_chart(fig_cum, use_container_width=True)
 
-    fig_actual = px.bar(actual_summary, x='Subcategory', y=['Balance Change', 'Budgeted'],
-                        color='Main Category', barmode='group', text_auto=True, title='Actual vs Budget')
+    fig_actual = px.bar(
+    actual_summary,
+    x='Subcategory',
+    y=['Balance Change', 'Budgeted'],
+    color='Main Category',
+    barmode='group',
+    text_auto=True,
+    title='Actual vs Budget',
+    color_discrete_map={
+        'Income': '#1f77b4',       # blue
+        'Expense': '#ff7f0e',      # orange
+        'Other': '#2ca02c'
+    }
+)
+
     st.plotly_chart(fig_actual, use_container_width=True)
 
     # Forecast
@@ -257,8 +279,17 @@ def budget_module():
         if forecast_display.empty:
             fig_forecast = px.line(title='Forecast (No Data)')
         else:
-            fig_forecast = px.line(forecast_display, x='Month', y='Forecast', color='Subcategory',
-                                   line_dash='Main Category', markers=True, title='Forecast')
+            fig_forecast = px.line(
+    forecast_display,
+    x='Month',
+    y='Forecast',
+    color='Subcategory',
+    line_dash='Main Category',
+    markers=True,
+    title='Forecast',
+    color_discrete_sequence=px.colors.qualitative.Pastel  # 🎨 soft colors
+)
+
         st.plotly_chart(fig_forecast, use_container_width=True)
     except Exception as e:
         st.warning(f"Forecasting failed: {e}")

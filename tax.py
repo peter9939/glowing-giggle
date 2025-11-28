@@ -451,7 +451,20 @@ def tax_module():
     st.dataframe(summary_df)
 
     # Chart
-    fig = px.bar(summary_df, x="Main Category", y=["Net Amount", "VAT Amount", "Income Tax per Row"], barmode="group", title="Category Summary", height=450)
+    fig = px.bar(
+    summary_df,
+    x="Main Category",
+    y=["Net Amount", "VAT Amount", "Income Tax per Row"],
+    barmode="group",
+    title="Category Summary",
+    height=450,
+    color_discrete_map={
+        "Net Amount": "#1f77b4",             # Blue
+        "VAT Amount": "#ff7f0e",             # Orange
+        "Income Tax per Row": "#2ca02c"      # Green
+    }
+)
+
     st.plotly_chart(fig, use_container_width=True)
 
     # PDF generation
